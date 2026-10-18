@@ -83,7 +83,7 @@ pub(in crate::workbench) fn show(
             nav_item(
                 ui,
                 "Albums",
-                egui_phosphor::regular::FOLDERS,
+                egui_phosphor::regular::DISC,
                 Page::Albums,
                 compact,
                 workbench,
