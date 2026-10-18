@@ -6,7 +6,7 @@ Viper is a fast, album-centric native music player for Linux with a low memory f
 
 ## Security
 
-If you save Samba credentials, Viper stores the password in its local SQLite database at `~/.config/viper-music/viper.sqlite3`. Anyone who can read that file may be able to retrieve the credentials.
+Saved passwords, API keys, shared secrets, and session tokens are stored in the operating system's credential store, not in SQLite. Credentials from older SQLite settings are migrated to the credential store and cleared from the database when loaded. Application preferences, account names, and library state remain in SQLite at `~/.config/viper-music/viper.sqlite3`.
 
 ## Requirements
 
@@ -68,7 +68,8 @@ To remove the installed application files later, run:
 
 On Linux, open **Preferences → Connections → Samba / SMB share** and enter a share URL such as
 `smb://nas.local/Music/Albums`. Username, password, and workgroup are optional for guest
-shares; entered connection settings are saved in Viper's local SQLite database. Viper uses Pavão and the
+shares; share settings are saved in Viper's local SQLite database, while the password is stored in the
+operating system's credential store. Viper uses Pavão and the
 system `libsmbclient` library. Install `libsmbclient-dev` to build and `libsmbclient` to run
 the application (for Debian or Ubuntu, `sudo apt install libsmbclient-dev libsmbclient`).
 SMB1-only servers require insecure legacy protocol support and are not enabled by default.

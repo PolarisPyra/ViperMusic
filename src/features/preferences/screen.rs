@@ -476,7 +476,7 @@ fn show_connections(
         ui.label(format!("Status: {status}"));
         ui.add_space(8.0);
         ui.label(
-            "Connect directly to a network share. Connection details are stored in the local SQLite database for future access.",
+            "Connect directly to a network share. Share details are stored in SQLite, and the password is saved in the operating system's credential store.",
         );
         ui.add_space(10.0);
         ui.label("Share folder URL");

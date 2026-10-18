@@ -107,13 +107,13 @@ pub struct SambaSettings {
     pub share_url: String,
     /// Username used to authenticate to the share.
     pub username: String,
-    /// Redacted password used to authenticate to the share and persisted in SQLite.
+    /// Redacted password used to authenticate to the share and stored in the OS credential store.
     pub password: SecretString,
     /// SMB workgroup or domain.
     pub workgroup: String,
 }
 
-/// Load saved SMB connection details.
+/// Load saved SMB connection details, migrating any legacy password to the OS credential store.
 ///
 /// # Returns
 /// The saved connection, or `None` when no connection is configured.
@@ -124,7 +124,7 @@ pub fn load_samba_settings() -> io::Result<Option<SambaSettings>> {
     use rusqlite::OptionalExtension;
 
     let connection = super::database::open()?;
-    connection
+    let saved = connection
         .query_row(
             "SELECT share_url, username, password, workgroup
              FROM samba_settings WHERE id = 1",
@@ -139,10 +139,41 @@ pub fn load_samba_settings() -> io::Result<Option<SambaSettings>> {
             },
         )
         .optional()
-        .map_err(super::database::database_error)
+        .map_err(super::database::database_error)?;
+    let Some(mut saved) = saved else {
+        return Ok(None);
+    };
+
+    let legacy_password = saved.password.expose_secret().to_owned();
+    let entry = samba_keyring_entry()?;
+    match entry.get_password() {
+        Ok(password) => saved.password = SecretString::from(password),
+        Err(keyring::Error::NoEntry) => {
+            if !legacy_password.is_empty() {
+                entry
+                    .set_password(&legacy_password)
+                    .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
+                saved.password = SecretString::from(legacy_password.clone());
+            }
+        }
+        Err(error) => return Err(io::Error::new(ErrorKind::Other, error.to_string())),
+    }
+
+    if !legacy_password.is_empty() {
+        connection
+            .pragma_update(None, "secure_delete", "ON")
+            .map_err(super::database::database_error)?;
+        connection
+            .execute("UPDATE samba_settings SET password = '' WHERE id = 1", [])
+            .map_err(super::database::database_error)?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            .map_err(super::database::database_error)?;
+    }
+    Ok(Some(saved))
 }
 
-/// Persist SMB connection details.
+/// Persist SMB connection details, storing the password in the OS credential store.
 ///
 /// # Arguments
 /// * `settings` - Share URL and credentials to save.
@@ -150,7 +181,22 @@ pub fn load_samba_settings() -> io::Result<Option<SambaSettings>> {
 /// # Errors
 /// Returns an I/O error if the database cannot be updated.
 pub fn save_samba_settings(settings: &SambaSettings) -> io::Result<()> {
+    let entry = samba_keyring_entry()?;
+    if settings.password.expose_secret().is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => return Err(io::Error::new(ErrorKind::Other, error.to_string())),
+        }
+    } else {
+        entry
+            .set_password(settings.password.expose_secret())
+            .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
+    }
+
     let connection = super::database::open()?;
+    connection
+        .pragma_update(None, "secure_delete", "ON")
+        .map_err(super::database::database_error)?;
     connection
         .execute(
             "INSERT INTO samba_settings (id, share_url, username, password, workgroup)
@@ -163,10 +209,13 @@ pub fn save_samba_settings(settings: &SambaSettings) -> io::Result<()> {
             rusqlite::params![
                 settings.share_url,
                 settings.username,
-                settings.password.expose_secret(),
+                "",
                 settings.workgroup,
             ],
         )
+        .map_err(super::database::database_error)?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .map_err(super::database::database_error)?;
     Ok(())
 }
@@ -185,7 +234,13 @@ pub struct LastFmSettings {
 }
 
 const LASTFM_KEYRING_SERVICE: &str = "viper-music-lastfm";
+const SAMBA_KEYRING_SERVICE: &str = "viper-music-samba";
 const DISCORD_KEYRING_SERVICE: &str = "viper-music-discord";
+
+fn samba_keyring_entry() -> io::Result<keyring::Entry> {
+    keyring::Entry::new(SAMBA_KEYRING_SERVICE, "password")
+        .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))
+}
 
 fn discord_keyring_entry() -> io::Result<keyring::Entry> {
     keyring::Entry::new(DISCORD_KEYRING_SERVICE, "application-id")
