@@ -113,8 +113,10 @@ pub(crate) fn show(
     }
 
     let resize_id = egui::Id::new("album-tracklist-side-panel").with("__resize");
-    let resized = ctx
-        .read_response(resize_id)
+    let resize_response = ctx.read_response(resize_id);
+    paint_panel_resize_grabber(ctx, output.response.rect, resize_response.as_ref(), colors);
+    let resized = resize_response
+        .as_ref()
         .is_some_and(|response| response.drag_stopped_by(egui::PointerButton::Primary));
     if resized {
         settings.right_panel_width = output
@@ -184,8 +186,10 @@ fn show_empty_album_sidebar(
         });
 
     let resize_id = egui::Id::new("album-tracklist-side-panel").with("__resize");
-    if ctx
-        .read_response(resize_id)
+    let resize_response = ctx.read_response(resize_id);
+    paint_panel_resize_grabber(ctx, output.response.rect, resize_response.as_ref(), colors);
+    if resize_response
+        .as_ref()
         .is_some_and(|response| response.drag_stopped_by(egui::PointerButton::Primary))
     {
         settings.right_panel_width = output
@@ -196,6 +200,34 @@ fn show_empty_album_sidebar(
         return save_settings(settings);
     }
     None
+}
+
+fn paint_panel_resize_grabber(
+    ctx: &egui::Context,
+    panel_rect: egui::Rect,
+    response: Option<&egui::Response>,
+    colors: crate::shared::ui::theme::Palette,
+) {
+    let hovered = response.is_some_and(egui::Response::hovered);
+    let dragged = response.is_some_and(egui::Response::dragged);
+    if hovered || dragged {
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("album-tracklist-resize-grabber"),
+    ));
+    let center = egui::pos2(panel_rect.left() + 6.0, panel_rect.center().y);
+    let color = if dragged { colors.accent } else { colors.muted };
+    if hovered || dragged {
+        painter.line_segment(
+            [
+                center - egui::vec2(0.0, 10.0),
+                center + egui::vec2(0.0, 10.0),
+            ],
+            egui::Stroke::new(if dragged { 2.0_f32 } else { 1.0_f32 }, color),
+        );
+    }
 }
 
 fn draw_track_panel_background(ui: &egui::Ui) {

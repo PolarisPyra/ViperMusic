@@ -123,7 +123,7 @@ impl MprisBridge {
             .spawn(move || {
                 async_std::task::block_on(async move {
                     let player = match Player::builder("viper")
-                        .identity("Viper Music")
+                        .identity("Viper")
                         .desktop_entry("viper")
                         .can_quit(false)
                         .can_raise(false)

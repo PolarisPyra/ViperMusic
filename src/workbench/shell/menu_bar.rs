@@ -625,25 +625,7 @@ fn queue_action_button(
 }
 
 pub(crate) fn style_menu_popup(ui: &mut egui::Ui) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
-    crate::shared::ui::theme::style_dropdown(ui);
-    ui.set_min_width(220.0);
-    ui.spacing_mut().menu_margin = egui::Margin::same(8);
-    ui.spacing_mut().button_padding = egui::vec2(14.0, 5.0);
-    ui.spacing_mut().item_spacing.y = 4.0;
-    let widgets = &mut ui.visuals_mut().widgets;
-    widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-    widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-    widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    // Match the album sort popup's native hovered row visuals.
-    widgets.hovered.bg_fill = colors.hover;
-    widgets.hovered.weak_bg_fill = colors.hover;
-    widgets.active.bg_fill = colors.hover;
-    widgets.active.weak_bg_fill = colors.hover;
-    widgets.active.bg_stroke = egui::Stroke::NONE;
-    widgets.open.bg_fill = colors.hover;
-    widgets.open.weak_bg_fill = colors.hover;
-    widgets.open.bg_stroke = egui::Stroke::NONE;
+    crate::shared::ui::theme::style_menu_contents(ui, 220.0);
 }
 
 fn style_menu_visuals(visuals: &mut egui::Visuals, colors: crate::shared::ui::theme::Palette) {

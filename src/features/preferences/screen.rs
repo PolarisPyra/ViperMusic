@@ -480,7 +480,7 @@ fn show_connections(
         );
         ui.add_space(10.0);
         ui.label("Share folder URL");
-        connection_text_edit(
+        crate::shared::ui::controls::connection_text_edit(
             ui,
             &mut preferences.smb_url_draft,
             "smb://server/Music/Albums",
@@ -490,22 +490,39 @@ fn show_connections(
         ui.columns(2, |columns| {
             columns[0].vertical(|ui| {
                 ui.label("Username");
-                connection_text_edit(ui, &mut preferences.smb_username, "Optional", false);
+                crate::shared::ui::controls::connection_text_edit(
+                    ui,
+                    &mut preferences.smb_username,
+                    "Optional",
+                    false,
+                );
             });
             columns[1].vertical(|ui| {
                 ui.label("Workgroup");
-                connection_text_edit(ui, &mut preferences.smb_workgroup, "Optional", false);
+                crate::shared::ui::controls::connection_text_edit(
+                    ui,
+                    &mut preferences.smb_workgroup,
+                    "Optional",
+                    false,
+                );
             });
         });
         ui.add_space(8.0);
         ui.label("Password");
-        connection_text_edit(ui, &mut preferences.smb_password, "Optional", true);
+        crate::shared::ui::controls::connection_text_edit(
+            ui,
+            &mut preferences.smb_password,
+            "Optional",
+            true,
+        );
         ui.add_space(8.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 38.0),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
-                if left_action_button(ui, "Connect and scan").clicked() {
+                if crate::shared::ui::controls::action_button(ui, "Connect and scan", true)
+                    .clicked()
+                {
                     *action = Some(PreferencesAction::ConnectSmbShare);
                 }
             },
@@ -549,7 +566,7 @@ fn show_services(
     ui.label(egui::RichText::new(status).size(11.0).color(colors.muted));
     ui.add_space(12.0);
     ui.label("Last.fm API key");
-    connection_text_edit(
+    crate::shared::ui::controls::connection_text_edit(
         ui,
         &mut preferences.lastfm_api_key_draft,
         "Enter your API key",
@@ -557,7 +574,7 @@ fn show_services(
     );
     ui.add_space(8.0);
     ui.label("Last.fm shared secret");
-    connection_text_edit(
+    crate::shared::ui::controls::connection_text_edit(
         ui,
         &mut preferences.lastfm_api_secret_draft,
         "Enter your API shared secret",
@@ -571,16 +588,20 @@ fn show_services(
     );
     ui.add_space(12.0);
     ui.horizontal_wrapped(|ui| {
-        if left_action_button(ui, "Save API credentials").clicked() {
+        if crate::shared::ui::controls::action_button(ui, "Save API credentials", true).clicked() {
             *action = Some(PreferencesAction::SaveLastFmSettings);
         }
-        if left_action_button(ui, "Connect Last.fm").clicked() {
+        if crate::shared::ui::controls::action_button(ui, "Connect Last.fm", true).clicked() {
             *action = Some(PreferencesAction::StartLastFmAuth);
         }
-        if lastfm_can_finish_auth && left_action_button(ui, "Finish sign-in").clicked() {
+        if lastfm_can_finish_auth
+            && crate::shared::ui::controls::action_button(ui, "Finish sign-in", true).clicked()
+        {
             *action = Some(PreferencesAction::FinishLastFmAuth);
         }
-        if lastfm_connected && left_action_button(ui, "Disconnect").clicked() {
+        if lastfm_connected
+            && crate::shared::ui::controls::action_button(ui, "Disconnect", true).clicked()
+        {
             *action = Some(PreferencesAction::DisconnectLastFm);
         }
     });
@@ -602,7 +623,7 @@ fn show_services(
     });
     ui.add_space(18.0);
     ui.label("Discord Application ID");
-    connection_text_edit(
+    crate::shared::ui::controls::connection_text_edit(
         ui,
         &mut preferences.discord_application_id_draft,
         "Enter your Discord application ID",
@@ -619,7 +640,7 @@ fn show_services(
         egui::vec2(ui.available_width(), 38.0),
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
-            if left_action_button(ui, "Save").clicked() {
+            if crate::shared::ui::controls::action_button(ui, "Save", true).clicked() {
                 settings.discord_application_id =
                     match preferences.discord_application_id_draft.trim() {
                         "" => None,
@@ -629,69 +650,7 @@ fn show_services(
             }
         },
     );
-}
 
-fn left_action_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
-    let font = egui::FontId::proportional(12.0);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), colors.text);
-    let size = egui::vec2(galley.size().x + 24.0, 34.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let fill = if response.is_pointer_button_down_on() {
-        colors.selected
-    } else if response.hovered() {
-        colors.hover
-    } else {
-        colors.surface
-    };
-    ui.painter().rect(
-        rect,
-        7.0,
-        fill,
-        egui::Stroke::new(1.0_f32, colors.border),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + 12.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font,
-        colors.text,
-    );
-    response
-}
-
-fn connection_text_edit(
-    ui: &mut egui::Ui,
-    value: &mut String,
-    hint: &str,
-    password: bool,
-) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
-    ui.scope(|ui| {
-        let input_fill = colors.input;
-        let input_border = colors.border;
-        let visuals = &mut ui.visuals_mut().widgets;
-        visuals.inactive.bg_fill = input_fill;
-        visuals.inactive.bg_stroke = egui::Stroke::new(1.0_f32, input_border);
-        visuals.hovered.bg_fill = colors.surface;
-        visuals.hovered.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
-        visuals.active.bg_fill = input_fill;
-        visuals.active.bg_stroke = egui::Stroke::new(1.0_f32, colors.accent);
-        let mut edit = egui::TextEdit::singleline(value)
-            .hint_text(egui::RichText::new(hint).color(colors.muted))
-            .text_color(colors.text)
-            .background_color(input_fill)
-            .margin(egui::vec2(8.0, 6.0))
-            .desired_width(ui.available_width());
-        if password {
-            edit = edit.password(true);
-        }
-        ui.add(edit)
-    })
-    .inner
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {

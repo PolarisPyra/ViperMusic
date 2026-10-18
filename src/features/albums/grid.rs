@@ -1,8 +1,8 @@
 use eframe::egui;
 
 use super::{
-    album_format_label, open_album, paint_cover_with_opacity,
-    paint_format_badge, play_album, show_album_context_menu, show_shimmer_rect, AlbumScreen,
+    album_format_label, open_album, paint_cover_with_opacity, paint_format_badge, play_album,
+    show_album_context_menu, show_shimmer_rect, AlbumScreen,
 };
 
 pub(super) fn show_album_rows(

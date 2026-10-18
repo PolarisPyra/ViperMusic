@@ -42,10 +42,7 @@ pub(crate) fn show(
                     &popup_anchor,
                     egui::PopupCloseBehavior::CloseOnClickOutside,
                     |popup_ui| {
-                        crate::shared::ui::theme::style_dropdown(popup_ui);
-                        popup_ui.set_min_width(sort_rect.width());
-                        popup_ui.spacing_mut().button_padding = egui::vec2(14.0, 5.0);
-                        popup_ui.spacing_mut().item_spacing.y = 4.0;
+                        crate::shared::ui::theme::style_menu_contents(popup_ui, sort_rect.width());
                         for sort in AlbumSort::ALL {
                             if popup_ui
                                 .selectable_label(
