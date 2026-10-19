@@ -1,3 +1,4 @@
+use super::theme::{self, Palette};
 use eframe::egui;
 
 /// Paint a compact button using the application's preference style.
@@ -12,35 +13,14 @@ use eframe::egui;
 ///
 /// The button response, including whether it was clicked.
 pub(crate) fn action_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    let font = egui::FontId::proportional(12.0);
-    let text_color = if enabled {
-        crate::shared::ui::theme::colors(ui.ctx()).text
-    } else {
-        crate::shared::ui::theme::colors(ui.ctx()).muted
-    };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, text_color);
-    action_button_with_dimensions(ui, label, enabled, galley.size().x + 24.0, 36.0)
-}
-
-fn action_button_with_dimensions(
-    ui: &mut egui::Ui,
-    label: &str,
-    enabled: bool,
-    width: f32,
-    height: f32,
-) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
-    let font = egui::FontId::proportional(12.0);
+    let colors = theme::colors(ui.ctx());
     let text_color = if enabled { colors.text } else { colors.muted };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), text_color);
-    let size = egui::vec2(
-        width.max(galley.size().x + 24.0),
-        height.max(galley.size().y + 12.0),
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(12.0),
+        text_color,
     );
+    let size = egui::vec2(galley.size().x + 24.0, (galley.size().y + 12.0).max(36.0));
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -63,13 +43,8 @@ fn action_button_with_dimensions(
         egui::Stroke::new(1.0_f32, colors.border),
         egui::StrokeKind::Inside,
     );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        font,
-        text_color,
-    );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, text_color);
     response
 }
 
@@ -91,7 +66,7 @@ pub(crate) fn connection_text_edit(
     hint: &str,
     password: bool,
 ) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     ui.scope(|ui| {
         let input_fill = colors.input;
         let input_border = colors.border;
@@ -114,4 +89,51 @@ pub(crate) fn connection_text_edit(
         ui.add(edit)
     })
     .inner
+}
+
+/// Frame shared by the application's modal dialogs.
+///
+/// # Arguments
+///
+/// * `colors` - Active theme palette.
+///
+/// # Returns
+///
+/// A rounded, bordered panel frame.
+pub(crate) fn modal_frame(colors: Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(colors.panel)
+        .stroke(egui::Stroke::new(1.0_f32, colors.border))
+        .corner_radius(14.0)
+        .inner_margin(egui::Margin::symmetric(18, 18))
+}
+
+/// Paint a dialog close button.
+///
+/// # Arguments
+///
+/// * `ui` - The UI that should contain the button.
+/// * `tooltip` - Hover text describing what the button closes.
+///
+/// # Returns
+///
+/// Whether the button was clicked.
+pub(crate) fn close_button(ui: &mut egui::Ui, tooltip: &str) -> bool {
+    let colors = theme::colors(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 8.0, colors.hover);
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::X,
+        theme::icon_font(16.0),
+        if response.hovered() {
+            colors.text
+        } else {
+            colors.muted
+        },
+    );
+    response.on_hover_text(tooltip).clicked()
 }

@@ -6,7 +6,7 @@ use crate::{
         library::state::LibraryFeature, lyrics::LyricsFeature, preferences::PreferencesState,
     },
     platform::persistence::settings::{LastFmSettings, Settings, StartupView},
-    shared::artwork::ArtworkCache,
+    shared::{artwork::ArtworkCache, clock::unix_time_seconds},
     workbench::{Page, WorkbenchState},
 };
 use anyhow::Context;
@@ -14,16 +14,9 @@ use eframe::egui;
 use secrecy::ExposeSecret;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-#[path = "library_loader.rs"]
-mod library_loader;
-#[path = "library_watcher.rs"]
-mod library_watcher;
-#[path = "runtime.rs"]
-mod runtime;
 
 /// Main application state and egui runtime integration.
 pub struct ViperApp {
@@ -33,17 +26,16 @@ pub struct ViperApp {
     pub(crate) lyrics: LyricsFeature,
     pub(crate) settings: Settings,
     pub(crate) preferences: PreferencesState,
-    discord_presence: DiscordPresence,
+    pub(super) discord_presence: DiscordPresence,
     pub(crate) lastfm_service: LastFmService,
     pub(crate) lastfm_settings: LastFmSettings,
-    last_observed_track: Option<usize>,
+    pub(super) last_observed_track: Option<usize>,
     pub(crate) error: Option<String>,
     pub(crate) artwork_cache: ArtworkCache,
-    last_window_size: Option<[f32; 2]>,
     #[cfg(target_os = "linux")]
-    smb_auth: Option<crate::features::library::smb::SmbAuth>,
+    pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
     #[cfg(target_os = "linux")]
-    pub(crate) mpris: crate::platform::mpris::MprisBridge,
+    pub(crate) mpris: crate::features::playback::mpris::MprisBridge,
 }
 
 impl ViperApp {
@@ -76,6 +68,7 @@ impl ViperApp {
         let saved_samba = crate::platform::persistence::settings::load_samba_settings()
             .ok()
             .flatten();
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut preferences = PreferencesState::new(
             settings.discord_application_id.clone().unwrap_or_default(),
             lastfm_settings.api_key.expose_secret().to_owned(),
@@ -83,28 +76,17 @@ impl ViperApp {
         );
         #[cfg(target_os = "linux")]
         {
-            preferences.smb_url_draft = saved_samba
-                .as_ref()
-                .map(|samba| samba.share_url.clone())
-                .or_else(|| {
-                    saved_path
-                        .as_ref()
-                        .filter(|path| crate::features::library::smb::is_smb_path(path))
-                        .map(|path| path.to_string_lossy().into_owned())
-                })
-                .unwrap_or_default();
-            preferences.smb_username = saved_samba
-                .as_ref()
-                .map(|samba| samba.username.clone())
-                .unwrap_or_default();
-            preferences.smb_password = saved_samba
-                .as_ref()
-                .map(|samba| samba.password.expose_secret().to_owned())
-                .unwrap_or_default();
-            preferences.smb_workgroup = saved_samba
-                .as_ref()
-                .map(|samba| samba.workgroup.clone())
-                .unwrap_or_default();
+            if let Some(samba) = &saved_samba {
+                preferences.smb_url_draft.clone_from(&samba.share_url);
+                preferences.smb_username.clone_from(&samba.username);
+                preferences.smb_password = samba.password.expose_secret().to_owned();
+                preferences.smb_workgroup.clone_from(&samba.workgroup);
+            } else if let Some(path) = saved_path
+                .as_deref()
+                .filter(|path| crate::features::library::is_smb_path(path))
+            {
+                preferences.smb_url_draft = path.to_string_lossy().into_owned();
+            }
         }
         let startup_page = match settings.startup_view {
             StartupView::Home => Page::Home,
@@ -117,7 +99,7 @@ impl ViperApp {
         playback.volume = settings.volume;
         let playback = Arc::new(Mutex::new(playback));
         #[cfg(target_os = "linux")]
-        let mpris = crate::platform::mpris::MprisBridge::new(Arc::clone(&playback));
+        let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback));
         let mut app = Self {
             workbench: WorkbenchState::new(startup_page),
             library: LibraryFeature::new(random_sort_seed),
@@ -131,7 +113,6 @@ impl ViperApp {
             last_observed_track: None,
             error: settings_error.or(lastfm_error),
             artwork_cache: ArtworkCache::new(),
-            last_window_size: None,
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
                 .as_ref()
@@ -145,23 +126,31 @@ impl ViperApp {
         };
         if let Some(path) = saved_path {
             #[cfg(target_os = "linux")]
-            if crate::features::library::smb::is_smb_path(&path) {
-                if let Some(auth) = app.smb_auth.clone() {
-                    app.playback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .set_smb_auth(auth);
-                    app.start_scan(path);
-                } else {
+            if crate::features::library::is_smb_path(&path) {
+                let Some(auth) = app.smb_auth.clone() else {
                     app.error = Some("Reconnect to your SMB share in Preferences".into());
-                }
-            } else {
-                app.start_scan(path);
+                    return app;
+                };
+                app.playback().set_smb_auth(auth);
             }
-            #[cfg(not(target_os = "linux"))]
             app.start_scan(path);
         }
         app
+    }
+
+    /// Lock the shared playback state, recovering it if another thread panicked while holding it.
+    pub(crate) fn playback(&self) -> MutexGuard<'_, Playback> {
+        self.playback.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Publish the current library to the MPRIS media controls.
+    #[cfg(target_os = "linux")]
+    pub(super) fn sync_mpris(&self) {
+        self.mpris.set_library(
+            Arc::clone(&self.library.model.tracks),
+            Arc::clone(&self.library.model.track_album),
+            &self.library.model.albums,
+        );
     }
 
     pub(crate) fn choose_folder(&mut self) {
@@ -208,10 +197,7 @@ impl ViperApp {
             self.settings
                 .save()
                 .context("Could not save SMB location")?;
-            self.playback
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .set_smb_auth(auth.clone());
+            self.playback().set_smb_auth(auth.clone());
             self.smb_auth = Some(auth);
             self.start_scan(path);
             Ok(())
@@ -227,6 +213,28 @@ impl ViperApp {
         }
     }
 
+    /// Persist the Discord application ID to the credential store, then save preferences.
+    pub(crate) fn save_discord_application_id(&mut self) {
+        if let Err(error) = self.settings.save_discord_application_id() {
+            self.error = Some(format!("Could not save Discord application ID: {error}"));
+        }
+        self.save_settings();
+    }
+
+    fn save_album_state<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
+        if let Err(error) = self.settings.save_album_state(keys) {
+            self.error = Some(format!("Could not save album state: {error}"));
+        }
+    }
+
+    fn save_lastfm_settings(&mut self) {
+        if let Err(error) =
+            crate::platform::persistence::settings::save_lastfm_settings(&self.lastfm_settings)
+        {
+            self.error = Some(format!("Could not save Last.fm settings: {error}"));
+        }
+    }
+
     pub(crate) fn save_lastfm_settings_from_preferences(&mut self) {
         let api_key = self.preferences.lastfm_api_key_draft.trim().to_owned();
         let api_secret = self.preferences.lastfm_api_secret_draft.trim().to_owned();
@@ -239,58 +247,39 @@ impl ViperApp {
         }
         self.lastfm_settings.api_key = secrecy::SecretString::from(api_key);
         self.lastfm_settings.api_secret = secrecy::SecretString::from(api_secret);
-        if let Err(error) =
-            crate::platform::persistence::settings::save_lastfm_settings(&self.lastfm_settings)
-        {
-            self.error = Some(format!("Could not save Last.fm settings: {error}"));
-        }
+        self.save_lastfm_settings();
     }
 
     pub(crate) fn disconnect_lastfm(&mut self) {
         self.lastfm_settings.session_key = None;
         self.lastfm_settings.username = None;
         self.lastfm_service.disconnect();
-        if let Err(error) =
-            crate::platform::persistence::settings::save_lastfm_settings(&self.lastfm_settings)
-        {
-            self.error = Some(format!("Could not save Last.fm settings: {error}"));
-        }
+        self.save_lastfm_settings();
     }
 
-    fn persist_window_size(&mut self, ctx: &egui::Context) {
+    /// Track the window size in memory; it is persisted once when the application exits.
+    pub(super) fn observe_window_size(&mut self, ctx: &egui::Context) {
         let size = ctx.input(|input| input.screen_rect.size());
-        if !size.x.is_finite() || !size.y.is_finite() || size.x < 760.0 || size.y < 520.0 {
-            return;
+        if size.x.is_finite() && size.y.is_finite() && size.x >= 760.0 && size.y >= 520.0 {
+            self.settings.window_size = Some([size.x.round(), size.y.round()]);
         }
-        let size = [size.x.round(), size.y.round()];
-        if self.last_window_size == Some(size) && self.settings.window_size == Some(size) {
-            return;
-        }
-
-        self.last_window_size = Some(size);
-        self.settings.window_size = Some(size);
-        self.save_settings();
     }
 
     pub(super) fn record_new_albums(&mut self) {
         let now = unix_time_seconds();
-        let mut changed = false;
+        let mut added = Vec::new();
         for album in &self.library.model.albums {
-            let key =
-                crate::features::library::sorting::album_sort_key(&album.artist, &album.title);
-            if let std::collections::btree_map::Entry::Vacant(entry) =
-                self.settings.album_added.entry(key)
-            {
-                entry.insert(now);
-                changed = true;
+            if !self.settings.album_added.contains_key(&album.key) {
+                self.settings.album_added.insert(album.key.clone(), now);
+                added.push(album.key.clone());
             }
         }
-        if changed {
-            self.save_settings();
+        if !added.is_empty() {
+            self.save_album_state(added.iter().map(String::as_str));
         }
     }
 
-    fn observe_playback_track(&mut self, playback: &Playback) {
+    pub(super) fn observe_playback_track(&mut self, playback: &Playback) {
         if self.last_observed_track == playback.current {
             return;
         }
@@ -311,7 +300,7 @@ impl ViperApp {
         let Some(album) = self.library.model.albums.get(album_index.get()) else {
             return;
         };
-        let key = crate::features::library::sorting::album_sort_key(&album.artist, &album.title);
+        let key = album.key.clone();
         *self
             .settings
             .album_play_counts
@@ -319,13 +308,7 @@ impl ViperApp {
             .or_default() += 1;
         self.settings
             .album_last_played
-            .insert(key, unix_time_seconds());
-        self.save_settings();
+            .insert(key.clone(), unix_time_seconds());
+        self.save_album_state([key.as_str()]);
     }
-}
-
-fn unix_time_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }

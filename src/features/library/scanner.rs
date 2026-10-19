@@ -1,4 +1,4 @@
-use super::{is_audio_path, normalize_album_key};
+use super::{album_key, is_audio_path};
 use crate::features::library::{
     cache::TrackMetadataCache, Album, DiscoveredTracks, Library, ScanProgress, Track,
 };
@@ -16,7 +16,19 @@ use std::{
     time::Duration,
 };
 
-use super::tag_reader::read_metadata;
+use super::tag_reader::{read_metadata, ReaderMetadataError, TrackMetadata};
+
+/// Result of reading one local track during a full scan.
+// Nearly every entry is a track, so boxing it would only add an allocation per file.
+#[allow(clippy::large_enum_variant)]
+enum LocalScan {
+    /// The scan was cancelled before this path was read.
+    Cancelled,
+    /// The file exists but is empty.
+    Empty(PathBuf),
+    /// Track metadata and the filesystem metadata used to validate future cache hits.
+    Track(Track, Option<fs::Metadata>),
+}
 
 pub(crate) fn load_track_artwork(path: &Path) -> Option<Vec<u8>> {
     load_artwork(path, |path| {
@@ -87,10 +99,7 @@ pub(crate) fn scan_library_with_auth(
     let mut skipped_empty_files = Vec::new();
     let mut scan_errors = Vec::new();
     let mut unreadable_directories = 0;
-    #[cfg(target_os = "linux")]
-    let is_smb = super::smb::is_smb_path(root);
-    #[cfg(not(target_os = "linux"))]
-    let is_smb = false;
+    let is_smb = cfg!(target_os = "linux") && super::is_smb_path(root);
     let cache = if is_smb {
         TrackMetadataCache::default()
     } else {
@@ -121,21 +130,11 @@ pub(crate) fn scan_library_with_auth(
     } else {
         scan_dir(
             root,
-            root,
             &mut audio_paths,
             &mut unreadable_directories,
             &mut HashSet::new(),
             cancel,
         );
-    }
-    if !is_smb {
-        audio_paths.retain(|path| match fs::metadata(path) {
-            Ok(metadata) if metadata.len() == 0 => {
-                skipped_empty_files.push(path.clone());
-                false
-            }
-            Ok(_) | Err(_) => true,
-        });
     }
     if cancel.load(Ordering::Relaxed) {
         return Library::default();
@@ -146,9 +145,16 @@ pub(crate) fn scan_library_with_auth(
     progress.total.store(audio_paths.len(), Ordering::Relaxed);
     let scan_path = |path: &PathBuf| {
         if cancel.load(Ordering::Relaxed) {
-            return None;
+            return LocalScan::Cancelled;
         }
         let metadata = fs::metadata(path).ok();
+        if metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.len() == 0)
+        {
+            progress.completed.fetch_add(1, Ordering::Relaxed);
+            return LocalScan::Empty(path.clone());
+        }
         let mut track = metadata
             .as_ref()
             .and_then(|metadata| cache.get(path, metadata))
@@ -161,9 +167,8 @@ pub(crate) fn scan_library_with_auth(
             missing_metadata_tracks.fetch_add(1, Ordering::Relaxed);
         }
         progress.completed.fetch_add(1, Ordering::Relaxed);
-        Some((track, metadata))
+        LocalScan::Track(track, metadata)
     };
-    let worker_count = std::thread::available_parallelism().map_or(4, |count| count.get().min(8));
     #[cfg(target_os = "linux")]
     let scanned: Vec<_> = if is_smb {
         let Some(auth) = smb_auth.as_ref() else {
@@ -203,18 +208,15 @@ pub(crate) fn scan_library_with_auth(
             let (mut metadata, cacheable, error, skipped_empty) = match session {
                 Ok(session) => match session.read_metadata(path) {
                     Ok(metadata) => (metadata, true, None, false),
-                    Err(super::tag_reader::ReaderMetadataError::Empty) => {
-                        (super::tag_reader::empty_metadata(), false, None, true)
+                    Err(ReaderMetadataError::Empty) => {
+                        (TrackMetadata::default(), false, None, true)
                     }
-                    Err(super::tag_reader::ReaderMetadataError::Failed(error)) => (
-                        super::tag_reader::empty_metadata(),
-                        false,
-                        Some(error),
-                        false,
-                    ),
+                    Err(ReaderMetadataError::Failed(error)) => {
+                        (TrackMetadata::default(), false, Some(error), false)
+                    }
                 },
                 Err(error) => (
-                    super::tag_reader::empty_metadata(),
+                    TrackMetadata::default(),
                     false,
                     Some(format!("Could not open SMB share for scanning: {error}")),
                     false,
@@ -231,9 +233,8 @@ pub(crate) fn scan_library_with_auth(
                 true,
             ))
         };
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count.min(4))
-            .build();
+        // Limit concurrent SMB sessions so large shares do not overwhelm the server.
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build();
         let results: Vec<_> = match pool {
             Ok(pool) => pool.install(|| {
                 audio_paths
@@ -290,15 +291,12 @@ pub(crate) fn scan_library_with_auth(
             if !track.album.trim().is_empty() {
                 if let Some(art) = embedded_art {
                     smb_album_art
-                        .entry((
-                            normalize_album_key(&track.album),
-                            normalize_album_key(&track.album_artist),
-                        ))
+                        .entry(album_key(&track.album, &track.album_artist))
                         .or_insert(art);
                 }
             }
             progress.completed.fetch_add(1, Ordering::Relaxed);
-            scanned.push(Some((track, None)));
+            scanned.push(LocalScan::Track(track, None));
         }
         // An unchanged rescan should not rewrite potentially large artwork blobs.
         if !cancel.load(Ordering::Relaxed)
@@ -309,22 +307,10 @@ pub(crate) fn scan_library_with_auth(
         }
         scanned
     } else {
-        match rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .build()
-        {
-            Ok(pool) => pool.install(|| audio_paths.par_iter().map(scan_path).collect()),
-            Err(_) => audio_paths.iter().map(scan_path).collect(),
-        }
+        audio_paths.par_iter().map(scan_path).collect()
     };
     #[cfg(not(target_os = "linux"))]
-    let scanned: Vec<_> = match rayon::ThreadPoolBuilder::new()
-        .num_threads(worker_count)
-        .build()
-    {
-        Ok(pool) => pool.install(|| audio_paths.par_iter().map(scan_path).collect()),
-        Err(_) => audio_paths.iter().map(scan_path).collect(),
-    };
+    let scanned: Vec<_> = audio_paths.par_iter().map(scan_path).collect();
     // The paths are now owned by the scanned Track values; release the original
     // directory-walk list before assembling the final library and cover art.
     drop(audio_paths);
@@ -333,11 +319,17 @@ pub(crate) fn scan_library_with_auth(
         return Library::default();
     }
     let mut tracks = Vec::with_capacity(scanned.len());
-    for (track, cache_metadata) in scanned.into_iter().flatten() {
-        if let Some(metadata) = cache_metadata {
-            refreshed_cache.insert(track.path.clone(), &metadata, track.clone());
+    for scan in scanned {
+        match scan {
+            LocalScan::Cancelled => {}
+            LocalScan::Empty(path) => skipped_empty_files.push(path),
+            LocalScan::Track(track, cache_metadata) => {
+                if let Some(metadata) = cache_metadata {
+                    refreshed_cache.insert(track.path.clone(), &metadata, track.clone());
+                }
+                tracks.push(track);
+            }
         }
-        tracks.push(track);
     }
     if cancel.load(Ordering::Relaxed) {
         return Library::default();
@@ -345,7 +337,7 @@ pub(crate) fn scan_library_with_auth(
     if !is_smb {
         refreshed_cache.save();
     }
-    tracks.sort_by(|a, b| a.path.cmp(&b.path));
+    tracks.par_sort_unstable_by(|left, right| left.path.cmp(&right.path));
 
     let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, track) in tracks.iter().enumerate() {
@@ -354,10 +346,7 @@ pub(crate) fn scan_library_with_auth(
             continue;
         }
         groups
-            .entry((
-                normalize_album_key(&track.album),
-                normalize_album_key(&track.album_artist),
-            ))
+            .entry(album_key(&track.album, &track.album_artist))
             .or_default()
             .push(index);
     }
@@ -366,48 +355,20 @@ pub(crate) fn scan_library_with_auth(
     let mut track_album = vec![None; tracks.len()];
     progress.total.fetch_add(groups.len(), Ordering::Relaxed);
     progress.phase.store(2, Ordering::Relaxed);
-    for (_, mut album_tracks) in groups {
+    for (_key, mut album_tracks) in groups {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        album_tracks.sort_by(|left, right| {
-            let left = &tracks[*left];
-            let right = &tracks[*right];
-            left.disc_number
-                .unwrap_or(1)
-                .cmp(&right.disc_number.unwrap_or(1))
-                .then_with(|| {
-                    left.track_number
-                        .unwrap_or(u32::MAX)
-                        .cmp(&right.track_number.unwrap_or(u32::MAX))
-                })
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        let title = tracks[album_tracks[0]].album.trim().to_owned();
-        let artist = tracks[album_tracks[0]].album_artist.trim().to_owned();
+        album_tracks.sort_by(|&left, &right| tracks[left].playback_order(&tracks[right]));
         #[cfg(target_os = "linux")]
-        let art = if is_smb {
-            smb_album_art
-                .get(&(
-                    normalize_album_key(&tracks[album_tracks[0]].album),
-                    normalize_album_key(&tracks[album_tracks[0]].album_artist),
-                ))
-                .cloned()
-        } else {
-            None
-        };
+        let art = smb_album_art.remove(&_key);
         #[cfg(not(target_os = "linux"))]
         let art = None;
         let album_index = albums.len();
-        for track_index in &album_tracks {
-            track_album[*track_index] = Some(super::model::AlbumIndex::new(album_index));
+        for &track_index in &album_tracks {
+            track_album[track_index] = Some(super::model::AlbumIndex::new(album_index));
         }
-        albums.push(Album {
-            title,
-            artist,
-            tracks: album_tracks,
-            art,
-        });
+        albums.push(Album::new(&tracks[album_tracks[0]], album_tracks, art));
         progress.completed.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -445,7 +406,6 @@ pub fn scan_added_tracks(paths: &[PathBuf], cancel: &AtomicBool) -> DiscoveredTr
         if path.is_dir() {
             scan_dir(
                 path,
-                path,
                 &mut candidates,
                 &mut unreadable_directories,
                 &mut visited,
@@ -458,34 +418,18 @@ pub fn scan_added_tracks(paths: &[PathBuf], cancel: &AtomicBool) -> DiscoveredTr
     candidates.sort();
     candidates.dedup();
     wait_for_stable_files(&candidates, cancel);
-    let worker_count = std::thread::available_parallelism().map_or(4, |count| count.get().min(8));
-    let tracks: Vec<_> = match rayon::ThreadPoolBuilder::new()
-        .num_threads(worker_count)
-        .build()
-    {
-        Ok(pool) => pool.install(|| {
-            candidates
-                .par_iter()
-                .filter(|path| !cancel.load(Ordering::Relaxed) && path.is_file())
-                .map(|path| scan_track(path.clone()))
-                .collect()
-        }),
-        Err(_) => candidates
-            .iter()
-            .filter(|path| !cancel.load(Ordering::Relaxed) && path.is_file())
-            .map(|path| scan_track(path.clone()))
-            .collect(),
-    };
+    let tracks: Vec<_> = candidates
+        .par_iter()
+        .filter(|path| !cancel.load(Ordering::Relaxed) && path.is_file())
+        .map(|path| scan_track(path.clone()))
+        .collect();
     let mut album_art = HashMap::new();
     let mut seen_album_art = HashSet::new();
     for track in &tracks {
         if track.album.trim().is_empty() {
             continue;
         }
-        let key = (
-            normalize_album_key(&track.album),
-            normalize_album_key(&track.album_artist),
-        );
+        let key = album_key(&track.album, &track.album_artist);
         if seen_album_art.insert(key.clone()) {
             if let Some(art) = load_track_artwork(&track.path) {
                 album_art.insert(key, Arc::from(art));
@@ -515,7 +459,6 @@ fn wait_for_stable_files(paths: &[PathBuf], cancel: &AtomicBool) {
 }
 
 fn scan_dir(
-    root: &Path,
     path: &Path,
     audio_paths: &mut Vec<PathBuf>,
     unreadable_directories: &mut usize,
@@ -541,15 +484,12 @@ fn scan_dir(
             break;
         }
         let path = entry.path();
-        if path.is_dir() {
-            scan_dir(
-                root,
-                &path,
-                audio_paths,
-                unreadable_directories,
-                visited,
-                cancel,
-            );
+        // Directory entries report their type without a stat; only symlinks need resolving.
+        let is_dir = entry
+            .file_type()
+            .is_ok_and(|kind| kind.is_dir() || (kind.is_symlink() && path.is_dir()));
+        if is_dir {
+            scan_dir(&path, audio_paths, unreadable_directories, visited, cancel);
             continue;
         }
         if !is_audio_path(&path) {
@@ -565,7 +505,7 @@ fn scan_track(path: PathBuf) -> Track {
     track_from_metadata(path, metadata)
 }
 
-fn track_from_metadata(path: PathBuf, metadata: super::tag_reader::TrackMetadata) -> Track {
+fn track_from_metadata(path: PathBuf, metadata: TrackMetadata) -> Track {
     let metadata_missing = !metadata.has_tags();
     Track {
         path,

@@ -1,9 +1,9 @@
-use eframe::egui;
-
-use super::{
+use super::screen::{
     album_format_label, open_album, paint_cover_with_opacity, paint_format_badge, play_album,
     show_album_context_menu, show_shimmer_rect, AlbumScreen,
 };
+use crate::shared::ui::theme;
+use eframe::egui;
 
 pub(super) fn show_album_rows(
     ctx: &egui::Context,
@@ -63,14 +63,13 @@ fn show_album_card(
     art_size: f32,
     card_height: f32,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     if screen.library.model.albums.get(index).is_none() {
         return;
     }
     let cover = screen.album_texture(ctx, index);
     let cover_opacity = screen.album_texture_opacity(ctx, index);
     let album = &screen.library.model.albums[index];
-    let format_label = album_format_label(&screen.library.model, album);
     let selected = screen.library.view.highlighted_album == Some(index);
     let response = ui.allocate_ui_with_layout(
         egui::vec2(card_width, card_height),
@@ -98,12 +97,16 @@ fn show_album_card(
                                 art.center(),
                                 egui::Align2::CENTER_CENTER,
                                 egui_phosphor::regular::DISC,
-                                egui::FontId::new(32.0, egui::FontFamily::Name("phosphor".into())),
+                                theme::icon_font(32.0),
                                 colors.muted,
                             );
                         }
                         if screen.settings.album_format_badges {
-                            paint_format_badge(ui, art, &format_label);
+                            paint_format_badge(
+                                ui,
+                                art,
+                                album_format_label(&screen.library.model, album),
+                            );
                         }
                     }
                     ui.add_space(9.0);

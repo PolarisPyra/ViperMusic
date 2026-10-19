@@ -1,3 +1,4 @@
+use super::theme;
 use eframe::egui;
 use std::hash::Hash;
 
@@ -9,7 +10,7 @@ pub(crate) fn show(
     page_size: usize,
     key: impl Hash,
 ) -> std::ops::Range<usize> {
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let colors = theme::colors(ctx);
     let page_count = total_items.div_ceil(page_size);
     let state_id = egui::Id::new(("pagination-page", key));
     let mut page = ctx.data_mut(|data| data.get_temp::<usize>(state_id).unwrap_or_default());
@@ -29,9 +30,8 @@ pub(crate) fn show(
                     let next = ui.add_enabled(
                         page + 1 < page_count,
                         egui::Button::new(
-                            egui::RichText::new(egui_phosphor::regular::CARET_RIGHT).font(
-                                egui::FontId::new(17.0, egui::FontFamily::Name("phosphor".into())),
-                            ),
+                            egui::RichText::new(egui_phosphor::regular::CARET_RIGHT)
+                                .font(theme::icon_font(17.0)),
                         )
                         .min_size(egui::vec2(34.0, 32.0)),
                     );
@@ -46,9 +46,8 @@ pub(crate) fn show(
                     let previous = ui.add_enabled(
                         page > 0,
                         egui::Button::new(
-                            egui::RichText::new(egui_phosphor::regular::CARET_LEFT).font(
-                                egui::FontId::new(17.0, egui::FontFamily::Name("phosphor".into())),
-                            ),
+                            egui::RichText::new(egui_phosphor::regular::CARET_LEFT)
+                                .font(theme::icon_font(17.0)),
                         )
                         .min_size(egui::vec2(34.0, 32.0)),
                     );

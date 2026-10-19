@@ -1,24 +1,27 @@
 use crate::{
     features::{library::state::LibraryFeature, playback::Playback},
+    shared::{
+        action::AppAction,
+        ui::{
+            controls::{close_button, modal_frame},
+            theme::{self, Palette},
+        },
+    },
     workbench::{Page, WorkbenchState},
 };
 use eframe::egui;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MenuBarAction {
-    ChooseMusicFolder,
-}
 
 pub(in crate::workbench) fn show(
     ctx: &egui::Context,
     workbench: &mut WorkbenchState,
     library: &LibraryFeature,
     playback: &mut Playback,
-) -> Option<MenuBarAction> {
-    let colors = crate::shared::ui::theme::colors(ctx);
+) -> Option<AppAction> {
+    let colors = theme::colors(ctx);
     let mut action = None;
-    let original_style = ctx.style().as_ref().clone();
-    let mut menu_style = original_style.clone();
+    // Menu popups read the context style, so apply menu visuals for this panel only.
+    let original_style = ctx.style();
+    let mut menu_style = (*original_style).clone();
     menu_style.spacing.menu_spacing = 6.0;
     style_menu_visuals(&mut menu_style.visuals, colors);
     ctx.set_style(menu_style);
@@ -43,17 +46,14 @@ pub(in crate::workbench) fn show(
                 |ui| {
                     ui.label(
                         egui::RichText::new(egui_phosphor::regular::DISC)
-                            .font(egui::FontId::new(
-                                18.0,
-                                egui::FontFamily::Name("phosphor".into()),
-                            ))
+                            .font(theme::icon_font(18.0))
                             .color(colors.muted),
                     );
                     ui.add_space(4.0);
                     ui.scope(|ui| {
                         // Keep the menu triggers visually quiet; popup styling is
                         // applied inside each menu closure to match album sort.
-                        crate::shared::ui::theme::style_dropdown(ui);
+                        theme::style_dropdown(ui);
 
                         let visuals = &mut ui.visuals_mut().widgets;
                         visuals.inactive.bg_fill = egui::Color32::TRANSPARENT;
@@ -99,7 +99,7 @@ pub(in crate::workbench) fn show(
                                     style_menu_popup(ui);
                                     if menu_item(ui, "Choose Music Folder").clicked() {
                                         ui.close_menu();
-                                        action = Some(MenuBarAction::ChooseMusicFolder);
+                                        action = Some(AppAction::ChooseMusicFolder);
                                     }
                                 });
                             },
@@ -127,81 +127,22 @@ pub(in crate::workbench) fn show(
                                 } else {
                                     "Play Selected Album"
                                 };
-                                if ui
-                                    .add_enabled(
-                                        can_play,
-                                        egui::SelectableLabel::new(
-                                            false,
-                                            egui::RichText::new(play_label).color(colors.text),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    if has_current_track {
-                                        playback.toggle_pause();
-                                    } else if let Some(album_index) = library.view.selected_album {
-                                        if let Some(album) = library.model.albums.get(album_index) {
-                                            if let Some(track_index) = library
-                                                .view
-                                                .selected_track
-                                                .filter(|index| album.tracks.contains(index))
-                                            {
-                                                playback.play_track_in_album(
-                                                    album,
-                                                    &library.model.tracks,
-                                                    track_index,
-                                                );
-                                            } else {
-                                                playback.play_album(album, &library.model.tracks);
-                                            }
-                                        }
-                                    } else if playback.has_next() {
-                                        playback.skip_next(&library.model.tracks);
-                                    } else if playback.shuffle_enabled {
-                                        playback.play_random_track(&library.model.tracks);
-                                    }
-                                    ui.close_menu();
+                                if enabled_menu_item(ui, can_play, play_label) {
+                                    playback.play_pause(library);
                                 }
                                 ui.separator();
-                                if ui
-                                    .add_enabled(
-                                        has_current_track || playback.has_history(),
-                                        egui::SelectableLabel::new(
-                                            false,
-                                            egui::RichText::new("Previous Track")
-                                                .color(colors.text),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                if enabled_menu_item(
+                                    ui,
+                                    has_current_track || playback.has_history(),
+                                    "Previous Track",
+                                ) {
                                     playback.previous(&library.model.tracks);
-                                    ui.close_menu();
                                 }
-                                if ui
-                                    .add_enabled(
-                                        playback.has_next(),
-                                        egui::SelectableLabel::new(
-                                            false,
-                                            egui::RichText::new("Next Track").color(colors.text),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                if enabled_menu_item(ui, playback.has_next(), "Next Track") {
                                     playback.skip_next(&library.model.tracks);
-                                    ui.close_menu();
                                 }
-                                if ui
-                                    .add_enabled(
-                                        has_current_track,
-                                        egui::SelectableLabel::new(
-                                            false,
-                                            egui::RichText::new("Stop").color(colors.text),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                if enabled_menu_item(ui, has_current_track, "Stop") {
                                     playback.stop();
-                                    ui.close_menu();
                                 }
                             },
                         );
@@ -251,16 +192,10 @@ fn show_shortcuts_popup(ctx: &egui::Context, workbench: &mut WorkbenchState) {
         return;
     }
 
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let colors = theme::colors(ctx);
     let mut close_requested = false;
     let response = egui::Modal::new(egui::Id::new("keyboard-shortcuts-modal"))
-        .frame(
-            egui::Frame::new()
-                .fill(colors.panel)
-                .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                .corner_radius(14.0)
-                .inner_margin(egui::Margin::symmetric(18, 18)),
-        )
+        .frame(modal_frame(colors))
         .backdrop_color(colors.backdrop)
         .show(ctx, |ui| {
             ui.set_min_width(360.0);
@@ -273,25 +208,7 @@ fn show_shortcuts_popup(ctx: &egui::Context, workbench: &mut WorkbenchState) {
                         .color(colors.text),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(rect, 8.0, colors.hover);
-                    }
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::X,
-                        egui::FontId::new(16.0, egui::FontFamily::Name("phosphor".into())),
-                        if response.hovered() {
-                            colors.text
-                        } else {
-                            colors.muted
-                        },
-                    );
-                    if response.on_hover_text("Close keyboard shortcuts").clicked() {
-                        close_requested = true;
-                    }
+                    close_requested = close_button(ui, "Close keyboard shortcuts");
                 });
             });
             ui.add_space(12.0);
@@ -338,25 +255,19 @@ fn show_queue_popup(
         return;
     }
 
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let colors = theme::colors(ctx);
     let screen_size = ctx.screen_rect().size();
     let margin = 24.0_f32.min(screen_size.x * 0.05).min(screen_size.y * 0.05);
     let panel_size = egui::vec2(
-        (screen_size.x - margin * 2.0).min(560.0).max(0.0),
-        (screen_size.y - margin * 2.0).min(620.0).max(0.0),
+        (screen_size.x - margin * 2.0).clamp(0.0, 560.0),
+        (screen_size.y - margin * 2.0).clamp(0.0, 620.0),
     );
     let content_size = (panel_size - egui::vec2(36.0, 36.0)).max(egui::Vec2::ZERO);
     let mut close_requested = false;
     let mut clear_requested = false;
 
     let response = egui::Modal::new(egui::Id::new("playback-queue-modal"))
-        .frame(
-            egui::Frame::new()
-                .fill(colors.panel)
-                .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                .corner_radius(14.0)
-                .inner_margin(egui::Margin::symmetric(18, 18)),
-        )
+        .frame(modal_frame(colors))
         .backdrop_color(colors.backdrop)
         .show(ctx, |ui| {
             ui.set_min_width(content_size.x);
@@ -383,25 +294,7 @@ fn show_queue_popup(
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(rect, 8.0, colors.hover);
-                    }
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::X,
-                        egui::FontId::new(16.0, egui::FontFamily::Name("phosphor".into())),
-                        if response.hovered() {
-                            colors.text
-                        } else {
-                            colors.muted
-                        },
-                    );
-                    if response.on_hover_text("Close queue").clicked() {
-                        close_requested = true;
-                    }
+                    close_requested = close_button(ui, "Close queue");
                 });
             });
             ui.add_space(16.0);
@@ -573,10 +466,10 @@ fn show_queue_popup(
             }
 
             if let Some((from, to)) = move_item {
-                playback.move_queued(from, to, &library.model.tracks);
+                playback.move_queued(from, to);
             }
             if let Some(index) = remove {
-                playback.remove_queued(index, &library.model.tracks);
+                playback.remove_queued(index);
             }
         });
 
@@ -606,7 +499,7 @@ fn queue_action_button(
             egui::Sense::hover()
         },
     );
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     if response.hovered() && enabled {
         ui.painter().rect_filled(rect, 7.0, colors.hover);
     }
@@ -614,7 +507,7 @@ fn queue_action_button(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::new(20.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(20.0),
         if response.hovered() && enabled {
             colors.text
         } else {
@@ -625,10 +518,10 @@ fn queue_action_button(
 }
 
 pub(crate) fn style_menu_popup(ui: &mut egui::Ui) {
-    crate::shared::ui::theme::style_menu_contents(ui, 220.0);
+    theme::style_menu_contents(ui, 220.0);
 }
 
-fn style_menu_visuals(visuals: &mut egui::Visuals, colors: crate::shared::ui::theme::Palette) {
+fn style_menu_visuals(visuals: &mut egui::Visuals, colors: Palette) {
     let fill = colors.panel;
     let selected = colors.selected;
     let border = egui::Stroke::new(1.0_f32, colors.border);
@@ -659,6 +552,21 @@ fn style_menu_visuals(visuals: &mut egui::Visuals, colors: crate::shared::ui::th
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     ui.selectable_label(false, egui::RichText::new(label).color(colors.text))
+}
+
+/// Draw a menu entry that can be disabled, closing the menu when it is clicked.
+fn enabled_menu_item(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
+    let colors = theme::colors(ui.ctx());
+    let clicked = ui
+        .add_enabled(
+            enabled,
+            egui::SelectableLabel::new(false, egui::RichText::new(label).color(colors.text)),
+        )
+        .clicked();
+    if clicked {
+        ui.close_menu();
+    }
+    clicked
 }

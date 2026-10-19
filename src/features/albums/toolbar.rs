@@ -1,6 +1,7 @@
 use crate::{
     features::library::state::LibraryViewState,
     platform::persistence::settings::{AlbumLayout, AlbumSort, Settings},
+    shared::ui::theme,
 };
 use eframe::egui;
 
@@ -10,7 +11,7 @@ pub(crate) fn show(
     library_view: &mut LibraryViewState,
     error: &mut Option<String>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let colors = theme::colors(ctx);
     egui::TopBottomPanel::top("view-toolbar")
         .exact_height(48.0)
         .frame(
@@ -131,10 +132,7 @@ pub(crate) fn show(
                                                 rect.center(),
                                                 egui::Align2::CENTER_CENTER,
                                                 egui_phosphor::regular::MAGNIFYING_GLASS,
-                                                egui::FontId::new(
-                                                    18.0,
-                                                    egui::FontFamily::Name("phosphor".into()),
-                                                ),
+                                                theme::icon_font(18.0),
                                                 colors.text,
                                             );
                                             let search = ui.add(
@@ -190,7 +188,7 @@ fn paint_sort_dropdown(
     label: &str,
     popup_id: egui::Id,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     let open = ui.memory(|memory| memory.is_popup_open(popup_id));
     let fill = if open || response.hovered() {
         colors.hover
@@ -215,7 +213,7 @@ fn paint_sort_dropdown(
         egui::pos2(rect.right() - 14.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
         egui_phosphor::regular::CARET_DOWN,
-        egui::FontId::new(15.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(15.0),
         colors.muted,
     );
 }
@@ -233,7 +231,7 @@ fn paint_icon_button(
     icon: &str,
     selected: bool,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     if selected || response.hovered() {
         ui.painter().rect_filled(
             rect,
@@ -249,7 +247,7 @@ fn paint_icon_button(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::new(18.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(18.0),
         if selected || response.hovered() {
             colors.text
         } else {

@@ -17,7 +17,7 @@ pub(crate) mod symphonia;
 mod tag_reader;
 pub mod watcher;
 
-pub(crate) use audio::{album_key, is_audio_path, normalize_album_key};
+pub(crate) use audio::{album_key, is_audio_path, is_smb_path};
 pub use model::{
     Album, AlbumIndex, AudioProperties, DiscoveredTracks, Library, ScanProgress, Track,
 };

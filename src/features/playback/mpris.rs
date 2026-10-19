@@ -1,7 +1,6 @@
-use crate::features::{
-    library::{Album, AlbumIndex, Track},
-    playback::{Playback, RepeatMode},
-};
+//! MPRIS media-control bridge between the desktop session bus and shared playback state.
+use super::{Playback, RepeatMode};
+use crate::features::library::{Album, AlbumIndex, Track};
 use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
 use std::{
     fs,
@@ -254,58 +253,37 @@ fn apply_command(playback: &Mutex<Playback>, library: &Mutex<MprisLibrary>, comm
                 "Playlist" => RepeatMode::All,
                 _ => RepeatMode::Off,
             };
-            playback.set_repeat_mode(repeat_mode, tracks);
+            playback.set_repeat_mode(repeat_mode);
         }
     }
 }
 
 fn connect_commands(player: &Player, sender: mpsc::Sender<MprisCommand>) {
-    let command_tx = sender.clone();
-    player.connect_next(move |_| {
-        let _ = command_tx.send(MprisCommand::Next);
-    });
-    let command_tx = sender.clone();
-    player.connect_previous(move |_| {
-        let _ = command_tx.send(MprisCommand::Previous);
-    });
-    let command_tx = sender.clone();
-    player.connect_play(move |_| {
-        let _ = command_tx.send(MprisCommand::Play);
-    });
-    let command_tx = sender.clone();
-    player.connect_pause(move |_| {
-        let _ = command_tx.send(MprisCommand::Pause);
-    });
-    let command_tx = sender.clone();
-    player.connect_play_pause(move |_| {
-        let _ = command_tx.send(MprisCommand::PlayPause);
-    });
-    let command_tx = sender.clone();
-    player.connect_stop(move |_| {
-        let _ = command_tx.send(MprisCommand::Stop);
-    });
-    let command_tx = sender.clone();
-    player.connect_seek(move |_, offset| {
-        let _ = command_tx.send(MprisCommand::Seek(offset.as_micros()));
-    });
-    let command_tx = sender.clone();
-    player.connect_set_position(move |_, track_id, position| {
-        let _ = command_tx.send(MprisCommand::SetPosition(
-            track_id.as_str().to_owned(),
-            Duration::from_micros(position.as_micros().max(0) as u64),
-        ));
-    });
-    let command_tx = sender.clone();
-    player.connect_set_volume(move |_, volume| {
-        let _ = command_tx.send(MprisCommand::SetVolume(volume));
-    });
-    let command_tx = sender.clone();
-    player.connect_set_shuffle(move |_, shuffle| {
-        let _ = command_tx.send(MprisCommand::SetShuffle(shuffle));
-    });
-    player.connect_set_loop_status(move |_, status| {
-        let _ = sender.send(MprisCommand::SetLoopStatus(status.as_str().to_owned()));
-    });
+    // Forward each D-Bus method call to the polling loop as a command.
+    macro_rules! forward {
+        ($connect:ident($($argument:pat_param),*) => $command:expr) => {{
+            let sender = sender.clone();
+            player.$connect(move |_, $($argument),*| {
+                let _ = sender.send($command);
+            });
+        }};
+    }
+    forward!(connect_next() => MprisCommand::Next);
+    forward!(connect_previous() => MprisCommand::Previous);
+    forward!(connect_play() => MprisCommand::Play);
+    forward!(connect_pause() => MprisCommand::Pause);
+    forward!(connect_play_pause() => MprisCommand::PlayPause);
+    forward!(connect_stop() => MprisCommand::Stop);
+    forward!(connect_seek(offset) => MprisCommand::Seek(offset.as_micros()));
+    forward!(connect_set_position(track_id, position) => MprisCommand::SetPosition(
+        track_id.as_str().to_owned(),
+        Duration::from_micros(position.as_micros().max(0) as u64),
+    ));
+    forward!(connect_set_volume(volume) => MprisCommand::SetVolume(volume));
+    forward!(connect_set_shuffle(shuffle) => MprisCommand::SetShuffle(shuffle));
+    forward!(connect_set_loop_status(status) => MprisCommand::SetLoopStatus(
+        status.as_str().to_owned()
+    ));
 }
 
 async fn apply_snapshot(
@@ -317,74 +295,41 @@ async fn apply_snapshot(
     if let Some(metadata) = metadata {
         let _ = player.set_metadata(metadata).await;
     }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.status != snapshot.status)
-    {
-        let _ = player.set_playback_status(snapshot.status).await;
+    // Only publish properties that changed since the previous snapshot.
+    macro_rules! publish {
+        ($($field:ident => $setter:ident),* $(,)?) => {$(
+            if previous
+                .as_ref()
+                .is_none_or(|state| state.$field != snapshot.$field)
+            {
+                let _ = player.$setter(snapshot.$field).await;
+            }
+        )*};
     }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.volume != snapshot.volume)
-    {
-        let _ = player.set_volume(snapshot.volume).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.shuffle != snapshot.shuffle)
-    {
-        let _ = player.set_shuffle(snapshot.shuffle).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.loop_status != snapshot.loop_status)
-    {
-        let _ = player.set_loop_status(snapshot.loop_status).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.can_go_next != snapshot.can_go_next)
-    {
-        let _ = player.set_can_go_next(snapshot.can_go_next).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.can_go_previous != snapshot.can_go_previous)
-    {
-        let _ = player.set_can_go_previous(snapshot.can_go_previous).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.can_play != snapshot.can_play)
-    {
-        let _ = player.set_can_play(snapshot.can_play).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.can_pause != snapshot.can_pause)
-    {
-        let _ = player.set_can_pause(snapshot.can_pause).await;
-    }
-    if previous
-        .as_ref()
-        .is_none_or(|state| state.can_seek != snapshot.can_seek)
-    {
-        let _ = player.set_can_seek(snapshot.can_seek).await;
-    }
+    publish!(
+        status => set_playback_status,
+        volume => set_volume,
+        shuffle => set_shuffle,
+        loop_status => set_loop_status,
+        can_go_next => set_can_go_next,
+        can_go_previous => set_can_go_previous,
+        can_play => set_can_play,
+        can_pause => set_can_pause,
+        can_seek => set_can_seek,
+    );
     player.set_position(Time::from_micros(
         snapshot.position.as_micros().min(i64::MAX as u128) as i64,
     ));
 }
 
 fn metadata_for_track(library: &Mutex<MprisLibrary>, index: Option<usize>) -> Metadata {
+    let no_track = || Metadata::builder().trackid(TrackId::NO_TRACK).build();
     let Ok(library) = library.lock() else {
-        return Metadata::builder().trackid(TrackId::NO_TRACK).build();
+        return no_track();
     };
-    let Some(index) = index else {
-        return Metadata::builder().trackid(TrackId::NO_TRACK).build();
-    };
-    let Some(track) = library.tracks.get(index) else {
-        return Metadata::builder().trackid(TrackId::NO_TRACK).build();
+    let Some((index, track)) = index.and_then(|index| Some((index, library.tracks.get(index)?)))
+    else {
+        return no_track();
     };
     let id = TrackId::try_from(track_id_for(index)).unwrap_or(TrackId::NO_TRACK);
     let mut metadata = Metadata::builder().trackid(id).title(track.title.clone());

@@ -11,7 +11,7 @@ use std::{
         mpsc::{self, Receiver, Sender, TryRecvError},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[derive(Default)]
@@ -49,16 +49,7 @@ impl LibraryBackgroundTasks {
         std::thread::Builder::new()
             .name("music-library-artwork".into())
             .spawn(move || {
-                let worker_count =
-                    std::thread::available_parallelism().map_or(4, |count| count.get().min(8));
-                if let Ok(pool) = rayon::ThreadPoolBuilder::new()
-                    .num_threads(worker_count)
-                    .build()
-                {
-                    pool.install(|| load_artwork_paths(&paths, &worker_cancel, &sender));
-                } else {
-                    load_artwork_paths(&paths, &worker_cancel, &sender);
-                }
+                load_artwork_paths(&paths, &worker_cancel, &sender);
             })
             .map_err(|error| format!("Could not start album artwork loading: {error}"))?;
         self.artwork_receiver = Some(receiver);
@@ -97,7 +88,7 @@ impl LibraryBackgroundTasks {
         ctx: &egui::Context,
     ) -> Vec<WatcherEvent> {
         let mut events = Vec::new();
-        let root = root.filter(|root| !root.to_string_lossy().starts_with("smb://"));
+        let root = root.filter(|root| !super::is_smb_path(root));
         if let Some(root) = root {
             if self.watcher_root.as_deref() != Some(root) {
                 self.file_watcher = None;
@@ -256,10 +247,9 @@ impl LibraryBackgroundTasks {
         result
     }
 
-    pub(crate) fn replace_scan(&mut self, receiver: Receiver<Library>, cancel: Arc<AtomicBool>) {
-        if let Some(previous) = self.scan_cancel.replace(cancel) {
-            previous.store(true, Ordering::Relaxed);
-        }
+    pub(crate) fn replace_scan(&mut self, receiver: Receiver<Library>, flag: Arc<AtomicBool>) {
+        cancel(&mut self.scan_cancel);
+        self.scan_cancel = Some(flag);
         self.scan_receiver = Some(receiver);
     }
 
@@ -283,17 +273,13 @@ impl LibraryBackgroundTasks {
     }
 
     pub(crate) fn cancel_all(&mut self) {
-        if let Some(cancel) = self.scan_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        if let Some(cancel) = self.watch_scan_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
+        cancel(&mut self.scan_cancel);
+        cancel(&mut self.watch_scan_cancel);
         self.cancel_artwork_scan();
     }
 
     pub(crate) fn clear_watch_state(&mut self) {
-        self.cancel_watch_scan();
+        cancel(&mut self.watch_scan_cancel);
         self.watch_scan_receiver = None;
         self.file_watcher = None;
         self.watcher_root = None;
@@ -302,17 +288,16 @@ impl LibraryBackgroundTasks {
         self.watch_debounce_until = None;
     }
 
-    fn cancel_watch_scan(&mut self) {
-        if let Some(cancel) = self.watch_scan_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-    }
-
     pub(crate) fn cancel_artwork_scan(&mut self) {
-        if let Some(cancel) = self.artwork_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
+        cancel(&mut self.artwork_cancel);
         self.artwork_receiver = None;
+    }
+}
+
+/// Signal a background worker to stop and forget its cancellation flag.
+fn cancel(flag: &mut Option<Arc<AtomicBool>>) {
+    if let Some(flag) = flag.take() {
+        flag.store(true, Ordering::Relaxed);
     }
 }
 
@@ -324,7 +309,7 @@ fn load_artwork_paths(
     use rayon::prelude::*;
 
     paths.par_iter().for_each(|(album_index, path)| {
-        if cancel.load(Ordering::Relaxed) || path.to_string_lossy().starts_with("smb://") {
+        if cancel.load(Ordering::Relaxed) || super::is_smb_path(path) {
             return;
         }
         if let Some(artwork) = super::scanner::load_track_artwork(path) {
@@ -332,8 +317,6 @@ fn load_artwork_paths(
         }
     });
 }
-
-use std::time::Duration;
 
 impl Drop for LibraryBackgroundTasks {
     fn drop(&mut self) {

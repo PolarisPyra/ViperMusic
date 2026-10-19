@@ -30,11 +30,16 @@ pub(crate) fn is_audio_path(path: &Path) -> bool {
         })
 }
 
+/// Return whether a library path is an `smb://` share URL rather than a local path.
+pub(crate) fn is_smb_path(path: &Path) -> bool {
+    path.to_str().is_some_and(|path| path.starts_with("smb://"))
+}
+
 pub(crate) fn album_key(title: &str, artist: &str) -> (String, String) {
     (normalize_album_key(title), normalize_album_key(artist))
 }
 
-pub(crate) fn normalize_album_key(value: &str) -> String {
+fn normalize_album_key(value: &str) -> String {
     value
         .to_lowercase()
         .chars()

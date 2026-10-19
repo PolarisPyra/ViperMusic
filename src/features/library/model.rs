@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     collections::HashMap,
     path::PathBuf,
     sync::{atomic::AtomicUsize, Arc},
@@ -50,6 +51,27 @@ pub struct Track {
     pub metadata_missing: bool,
 }
 
+impl Track {
+    /// Compare tracks by disc, track number, and path for album playback order.
+    ///
+    /// # Arguments
+    /// * `other` - Track to compare against.
+    ///
+    /// # Returns
+    /// The ordering of `self` relative to `other`.
+    pub fn playback_order(&self, other: &Self) -> Ordering {
+        self.disc_number
+            .unwrap_or(1)
+            .cmp(&other.disc_number.unwrap_or(1))
+            .then_with(|| {
+                self.track_number
+                    .unwrap_or(u32::MAX)
+                    .cmp(&other.track_number.unwrap_or(u32::MAX))
+            })
+            .then_with(|| self.path.cmp(&other.path))
+    }
+}
+
 /// Technical properties of an audio stream.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct AudioProperties {
@@ -70,10 +92,35 @@ pub struct Album {
     pub title: String,
     /// Album artist.
     pub artist: String,
+    /// Stable key for persisted per-album state such as ratings and play counts.
+    pub key: String,
     /// Track indexes into [`Library::tracks`], ordered for playback.
     pub tracks: Vec<usize>,
     /// Shared encoded album artwork, if available.
     pub art: Option<Arc<[u8]>>,
+}
+
+impl Album {
+    /// Create an album from the tags of its first track.
+    ///
+    /// # Arguments
+    /// * `first_track` - Track supplying the album title and album artist.
+    /// * `tracks` - Track indexes into [`Library::tracks`], ordered for playback.
+    /// * `art` - Shared encoded album artwork, if available.
+    ///
+    /// # Returns
+    /// An album with trimmed metadata and its persisted-state key.
+    pub fn new(first_track: &Track, tracks: Vec<usize>, art: Option<Arc<[u8]>>) -> Self {
+        let title = first_track.album.trim().to_owned();
+        let artist = first_track.album_artist.trim().to_owned();
+        Self {
+            key: format!("{artist}\0{title}"),
+            title,
+            artist,
+            tracks,
+            art,
+        }
+    }
 }
 
 /// Tracks and album groups discovered by a library scan.

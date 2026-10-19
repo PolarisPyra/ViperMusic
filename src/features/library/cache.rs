@@ -113,27 +113,32 @@ impl TrackMetadataCache {
         {
             return false;
         }
+        let Ok(mut insert) = transaction.prepare(
+            "INSERT INTO track_metadata
+             (path, metadata_version, file_size, modified_secs, modified_nanos, track)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        ) else {
+            return false;
+        };
+        let mut payload = Vec::new();
         for (path, entry) in &self.entries {
-            let Ok(track) = serde_json::to_vec(&entry.track) else {
-                return false;
-            };
-            let result = transaction.execute(
-                "INSERT INTO track_metadata
-                 (path, metadata_version, file_size, modified_secs, modified_nanos, track)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    path.to_string_lossy(),
-                    entry.metadata_version,
-                    i64::try_from(entry.size).unwrap_or(i64::MAX),
-                    i64::try_from(entry.modified_secs).unwrap_or(i64::MAX),
-                    i64::from(entry.modified_nanos),
-                    track,
-                ],
-            );
-            if result.is_err() {
+            payload.clear();
+            if serde_json::to_writer(&mut payload, &entry.track).is_err()
+                || insert
+                    .execute(params![
+                        path.to_string_lossy(),
+                        entry.metadata_version,
+                        i64::try_from(entry.size).unwrap_or(i64::MAX),
+                        i64::try_from(entry.modified_secs).unwrap_or(i64::MAX),
+                        i64::from(entry.modified_nanos),
+                        payload,
+                    ])
+                    .is_err()
+            {
                 return false;
             }
         }
+        drop(insert);
         transaction.commit().is_ok()
     }
 }
@@ -151,19 +156,15 @@ fn load_database_entries() -> BTreeMap<PathBuf, CachedTrack> {
     let Ok(rows) = statement.query_map([], |row| {
         let payload: Vec<u8> = row.get(5)?;
         let track = serde_json::from_slice(&payload).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                payload.len(),
-                rusqlite::types::Type::Blob,
-                Box::new(error),
-            )
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Blob, Box::new(error))
         })?;
         Ok((
             PathBuf::from(row.get::<_, String>(0)?),
             CachedTrack {
                 metadata_version: row.get(1)?,
-                size: read_u64(row, 2)?,
-                modified_secs: read_u64(row, 3)?,
-                modified_nanos: read_u32(row, 4)?,
+                size: read_unsigned(row, 2)?,
+                modified_secs: read_unsigned(row, 3)?,
+                modified_nanos: read_unsigned(row, 4)?,
                 track,
             },
         ))
@@ -188,16 +189,12 @@ fn load_legacy_cache() -> Option<(PathBuf, BTreeMap<PathBuf, CachedTrack>)> {
     Some((path, entries))
 }
 
-fn read_u64(row: &Row<'_>, column: usize) -> rusqlite::Result<u64> {
-    let value = row.get::<_, i64>(column)?;
-    u64::try_from(value).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
-    })
-}
-
-fn read_u32(row: &Row<'_>, column: usize) -> rusqlite::Result<u32> {
-    let value = row.get::<_, i64>(column)?;
-    u32::try_from(value).map_err(|error| {
+/// Read a non-negative SQLite integer column into a narrower unsigned type.
+fn read_unsigned<T: TryFrom<i64, Error = std::num::TryFromIntError>>(
+    row: &Row<'_>,
+    column: usize,
+) -> rusqlite::Result<T> {
+    T::try_from(row.get::<_, i64>(column)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
     })
 }

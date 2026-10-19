@@ -1,7 +1,10 @@
-use crate::shared::artwork::ArtworkCache;
 use crate::{
-    features::{library::state::LibraryFeature, playback::Playback},
+    features::{
+        library::state::LibraryFeature,
+        playback::{Playback, RepeatMode},
+    },
     platform::persistence::settings::Settings,
+    shared::{artwork::ArtworkCache, ui::theme},
     workbench::WorkbenchState,
 };
 use eframe::egui;
@@ -20,7 +23,7 @@ pub(in crate::workbench) fn show(
     artwork_cache: &mut ArtworkCache,
     error: &mut Option<String>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let colors = theme::colors(ctx);
     egui::TopBottomPanel::bottom("scrubber-controls")
         .exact_height(PANEL_HEIGHT)
         .frame(
@@ -144,33 +147,37 @@ pub(in crate::workbench) fn show(
                     egui::Sense::hover()
                 },
             );
+            let (repeat_id, repeat_icon, repeat_tooltip) = match playback.repeat_mode {
+                RepeatMode::Off => (
+                    "player-repeat-off",
+                    egui_phosphor::regular::REPEAT,
+                    "Repeat: Off",
+                ),
+                RepeatMode::All => (
+                    "player-repeat-all",
+                    egui_phosphor::regular::REPEAT,
+                    "Repeat: Queue",
+                ),
+                RepeatMode::One => (
+                    "player-repeat-one",
+                    egui_phosphor::regular::REPEAT_ONCE,
+                    "Repeat: Track",
+                ),
+            };
             let repeat = transport_icon_button(
                 ui,
                 repeat_rect,
-                match playback.repeat_mode {
-                    crate::features::playback::RepeatMode::One => "player-repeat-one",
-                    crate::features::playback::RepeatMode::All => "player-repeat-all",
-                    crate::features::playback::RepeatMode::Off => "player-repeat-off",
-                },
-                match playback.repeat_mode {
-                    crate::features::playback::RepeatMode::One => {
-                        egui_phosphor::regular::REPEAT_ONCE
-                    }
-                    _ => egui_phosphor::regular::REPEAT,
-                },
-                match playback.repeat_mode {
-                    crate::features::playback::RepeatMode::Off => "Repeat: Off",
-                    crate::features::playback::RepeatMode::All => "Repeat: Queue",
-                    crate::features::playback::RepeatMode::One => "Repeat: Track",
-                },
-                playback.repeat_mode != crate::features::playback::RepeatMode::Off,
+                repeat_id,
+                repeat_icon,
+                repeat_tooltip,
+                playback.repeat_mode != RepeatMode::Off,
                 true,
             );
             ui.painter().text(
                 previous_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 egui_phosphor::regular::SKIP_BACK,
-                egui::FontId::new(28.0, egui::FontFamily::Name("phosphor".into())),
+                theme::icon_font(28.0),
                 if previous.hovered() && previous_enabled {
                     colors.text
                 } else {
@@ -195,7 +202,7 @@ pub(in crate::workbench) fn show(
                 play_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 icon,
-                egui::FontId::new(34.0, egui::FontFamily::Name("phosphor".into())),
+                theme::icon_font(34.0),
                 if playback.current.is_some() {
                     colors.on_accent
                 } else {
@@ -206,7 +213,7 @@ pub(in crate::workbench) fn show(
                 next_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 egui_phosphor::regular::SKIP_FORWARD,
-                egui::FontId::new(28.0, egui::FontFamily::Name("phosphor".into())),
+                theme::icon_font(28.0),
                 if next.hovered() && next_enabled {
                     colors.text
                 } else {
@@ -228,33 +235,15 @@ pub(in crate::workbench) fn show(
                 playback.toggle_shuffle(&library.model.tracks);
             }
             if repeat.double_clicked() {
-                playback.repeat_current_track(&library.model.tracks);
+                playback.set_repeat_mode(RepeatMode::One);
             } else if repeat.clicked() {
-                playback.toggle_repeat_all(&library.model.tracks);
+                playback.toggle_repeat_all();
             }
             if previous.clicked() {
                 playback.previous(&library.model.tracks);
             }
             if play.clicked() {
-                if current.is_some() {
-                    playback.toggle_pause();
-                } else if let Some(album_index) = library.view.selected_album {
-                    if let Some(album) = library.model.albums.get(album_index) {
-                        if let Some(track_index) = library
-                            .view
-                            .selected_track
-                            .filter(|index| album.tracks.contains(index))
-                        {
-                            playback.play_track_in_album(album, &library.model.tracks, track_index);
-                        } else {
-                            playback.play_album(album, &library.model.tracks);
-                        }
-                    }
-                } else if playback.has_next() {
-                    playback.skip_next(&library.model.tracks);
-                } else if playback.shuffle_enabled {
-                    playback.play_random_track(&library.model.tracks);
-                }
+                playback.play_pause(library);
             }
             if next.clicked() {
                 playback.skip_next(&library.model.tracks);
@@ -299,18 +288,9 @@ pub(in crate::workbench) fn show(
             if queue.clicked() {
                 workbench.show_queue = !workbench.show_queue;
             }
-            let audio_info = current
-                .and_then(|index| library.model.tracks.get(index).map(|track| (index, track)))
-                .map(|(index, track)| {
-                    let file_type = track
-                        .path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .unwrap_or("AUDIO")
-                        .to_ascii_uppercase();
-                    (index, file_type, track.audio)
-                });
-            show_audio_chips(ui, controls_rect, volume_area, audio_info.as_ref());
+            if let Some(track) = current.and_then(|index| library.model.tracks.get(index)) {
+                show_audio_chips(ui, controls_rect, volume_area, track);
+            }
 
             let volume_icon = egui::Rect::from_min_size(
                 volume_area.min + egui::vec2(0.0, 4.0),
@@ -325,7 +305,7 @@ pub(in crate::workbench) fn show(
                 volume_icon.center(),
                 egui::Align2::CENTER_CENTER,
                 volume_glyph,
-                egui::FontId::new(22.0, egui::FontFamily::Name("phosphor".into())),
+                theme::icon_font(22.0),
                 colors.muted,
             );
             let volume_track_area = egui::Rect::from_min_max(
@@ -369,7 +349,7 @@ pub(in crate::workbench) fn show(
                 }
             }
             if volume_response.dragged() {
-                playback.preview_volume(settings.volume);
+                playback.set_volume(settings.volume);
             }
             if volume_response.clicked() || volume_response.drag_stopped() {
                 playback.set_volume(settings.volume);
@@ -468,7 +448,7 @@ fn transport_icon_button(
     active: bool,
     enabled: bool,
 ) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     let response = ui.interact(
         rect,
         egui::Id::new(id),
@@ -489,7 +469,7 @@ fn transport_icon_button(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::new(20.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(20.0),
         color,
     );
     response.on_hover_text(tooltip)
@@ -502,7 +482,7 @@ fn show_track_info(
     artwork_cache: &mut ArtworkCache,
     current: Option<usize>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     if let Some(index) = current {
         let album_index = library
             .model
@@ -512,7 +492,7 @@ fn show_track_info(
             .flatten()
             .map(crate::features::library::AlbumIndex::get);
         let texture = album_index.and_then(|album_index| {
-            let bytes = library.model.albums.get(album_index)?.art.as_deref()?;
+            let bytes = library.model.albums.get(album_index)?.art.as_ref()?;
             artwork_cache.texture(ctx, album_index, bytes)
         });
         let Some(track) = library.model.tracks.get(index) else {
@@ -556,17 +536,21 @@ fn show_audio_chips(
     ui: &mut egui::Ui,
     controls_rect: egui::Rect,
     volume_area: egui::Rect,
-    audio_info: Option<&(usize, String, crate::features::library::AudioProperties)>,
+    track: &crate::features::library::Track,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
-    let Some((track_index, file_type, audio)) = audio_info else {
-        return;
-    };
+    let colors = theme::colors(ui.ctx());
     let left = controls_rect.right() + 14.0;
     let right = volume_area.left() - 10.0;
     if right <= left {
         return;
     }
+    let file_type = track
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("AUDIO")
+        .to_ascii_uppercase();
+    let audio = track.audio;
 
     let mut details = vec![file_type.clone()];
     let mut tooltip_details = vec![format!("File type: {file_type}")];
@@ -615,12 +599,8 @@ fn show_audio_chips(
         );
         ui.painter()
             .galley(rect.center() - galley.size() * 0.5, galley, text_color);
-        ui.interact(
-            rect,
-            ui.id().with(("audio-info-chip", track_index)),
-            egui::Sense::hover(),
-        )
-        .on_hover_text(tooltip);
+        ui.interact(rect, ui.id().with("audio-info-chip"), egui::Sense::hover())
+            .on_hover_text(tooltip);
     }
 }
 

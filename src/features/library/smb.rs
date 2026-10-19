@@ -141,10 +141,6 @@ pub(crate) fn validate_url(url: &str) -> Result<(), SmbAccessError> {
     SharePath::parse(url).map(|_| ())
 }
 
-pub(crate) fn is_smb_path(path: &std::path::Path) -> bool {
-    path.to_str().is_some_and(|path| path.starts_with("smb://"))
-}
-
 pub(crate) struct SmbEntry {
     pub path: PathBuf,
     pub fingerprint: Option<String>,

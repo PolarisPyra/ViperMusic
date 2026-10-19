@@ -1,19 +1,15 @@
-use crate::shared::artwork::ArtworkCache;
+use super::{grid, list, toolbar};
 use crate::{
     features::{
         library::{state::LibraryFeature, Album, Library},
         playback::Playback,
     },
     platform::persistence::settings::{AlbumLayout, Settings},
+    shared::{artwork::ArtworkCache, ui::theme},
     workbench::WorkbenchState,
 };
 use eframe::egui;
-use std::{path::Path, process::Command};
-
-#[path = "grid.rs"]
-mod grid;
-#[path = "list.rs"]
-mod list;
+use std::{borrow::Cow, path::Path, process::Command};
 
 pub(crate) struct AlbumScreen<'a> {
     pub(crate) workbench: &'a mut WorkbenchState,
@@ -24,35 +20,37 @@ pub(crate) struct AlbumScreen<'a> {
     pub(crate) error: &'a mut Option<String>,
 }
 
-pub(super) fn album_format_label(library: &Library, album: &Album) -> String {
-    let mut format = None;
-    for track_index in &album.tracks {
-        let Some(track) = library.tracks.get(*track_index) else {
-            continue;
-        };
+/// Return the shared file format of an album's tracks, `MIXED`, or `OTHER`.
+pub(super) fn album_format_label(library: &Library, album: &Album) -> Cow<'static, str> {
+    let mut format: Option<&str> = None;
+    for track in album
+        .tracks
+        .iter()
+        .filter_map(|&index| library.tracks.get(index))
+    {
         let extension = track
             .path
             .extension()
             .and_then(|extension| extension.to_str())
-            .unwrap_or("other")
-            .to_ascii_lowercase();
-        if format.as_deref().is_some_and(|first| first != extension) {
-            return "MIXED".to_owned();
+            .unwrap_or("other");
+        match format {
+            Some(first) if !first.eq_ignore_ascii_case(extension) => return Cow::Borrowed("MIXED"),
+            Some(_) => {}
+            None => format = Some(extension),
         }
-        format.get_or_insert(extension);
     }
-    format.map_or_else(
-        || "OTHER".to_owned(),
-        |extension| extension.to_ascii_uppercase(),
-    )
+    format.map_or(Cow::Borrowed("OTHER"), |extension| {
+        Cow::Owned(extension.to_ascii_uppercase())
+    })
 }
 
-pub(super) fn paint_format_badge(ui: &egui::Ui, cover: egui::Rect, label: &str) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
-    let font = egui::FontId::proportional(11.0);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, colors.text);
+pub(super) fn paint_format_badge(ui: &egui::Ui, cover: egui::Rect, label: Cow<'static, str>) {
+    let colors = theme::colors(ui.ctx());
+    let galley = ui.painter().layout_no_wrap(
+        label.into_owned(),
+        egui::FontId::proportional(11.0),
+        colors.text,
+    );
     let badge_size = galley.size() + egui::vec2(14.0, 8.0);
     let badge = egui::Rect::from_min_size(
         egui::pos2(cover.left() + 5.0, cover.bottom() - badge_size.y - 5.0),
@@ -69,7 +67,7 @@ impl AlbumScreen<'_> {
         ctx: &egui::Context,
         album_index: usize,
     ) -> Option<egui::TextureHandle> {
-        let bytes = self.library.model.albums.get(album_index)?.art.as_deref()?;
+        let bytes = self.library.model.albums.get(album_index)?.art.as_ref()?;
         self.artwork_cache.texture(ctx, album_index, bytes)
     }
 
@@ -79,13 +77,8 @@ impl AlbumScreen<'_> {
 }
 
 pub(crate) fn show(ctx: &egui::Context, mut screen: AlbumScreen<'_>) {
-    let colors = crate::shared::ui::theme::colors(ctx);
-    crate::features::albums::toolbar::show(
-        ctx,
-        screen.settings,
-        &mut screen.library.view,
-        screen.error,
-    );
+    let colors = theme::colors(ctx);
+    toolbar::show(ctx, screen.settings, &mut screen.library.view, screen.error);
     let layout = screen.settings.album_layout;
     let albums = screen.library.filtered_album_indices(screen.settings);
     let page = crate::shared::ui::pagination::show(
@@ -117,9 +110,6 @@ fn show_grid(
         egui::Sense::click(),
     );
     ui.spacing_mut().scroll.bar_outer_margin = 10.0;
-    ui.spacing_mut().scroll.dormant_background_opacity = 0.0;
-    ui.spacing_mut().scroll.active_background_opacity = 0.0;
-    ui.spacing_mut().scroll.interact_background_opacity = 0.0;
 
     let layout = screen.settings.album_layout;
     let width = ui.available_width();
@@ -152,12 +142,12 @@ fn show_grid(
             }
         });
     if background_response.clicked() {
-        clear_album_selection(screen);
+        screen.library.view.highlighted_album = None;
     }
 }
 
 fn show_empty(ctx: &egui::Context, ui: &mut egui::Ui, screen: &AlbumScreen<'_>, width: f32) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     if screen.library.scanning
         && screen.library.model.albums.is_empty()
         && screen.library.view.search.trim().is_empty()
@@ -197,10 +187,6 @@ pub(super) fn play_album(screen: &mut AlbumScreen<'_>, index: usize) {
     }
 }
 
-pub(super) fn clear_album_selection(screen: &mut AlbumScreen<'_>) {
-    screen.library.view.highlighted_album = None;
-}
-
 pub(super) fn show_album_context_menu(
     response: egui::Response,
     screen: &mut AlbumScreen<'_>,
@@ -208,7 +194,7 @@ pub(super) fn show_album_context_menu(
 ) {
     response.context_menu(|ui| {
         crate::workbench::style_menu_popup(ui);
-        let colors = crate::shared::ui::theme::colors(ui.ctx());
+        let colors = theme::colors(ui.ctx());
         if ui
             .selectable_label(false, egui::RichText::new("Play album").color(colors.text))
             .clicked()
@@ -286,7 +272,7 @@ pub(super) fn paint_cover_with_opacity(
 }
 
 pub(super) fn show_shimmer_rect(ui: &egui::Ui, rect: egui::Rect, radius: f32) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     let time = ui.ctx().input(|input| input.time);
     let pulse = ((time * 1.8).sin() * 0.5 + 0.5) as f32;
     let base = colors.surface.lerp_to_gamma(colors.hover, pulse * 0.35);

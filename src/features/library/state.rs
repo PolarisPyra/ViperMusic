@@ -37,7 +37,8 @@ impl LibraryFeature {
                 .enumerate()
                 .filter(|(_, album)| {
                     !album.tracks.is_empty()
-                        && (album.title.to_lowercase().contains(&query)
+                        && (query.is_empty()
+                            || album.title.to_lowercase().contains(&query)
                             || album.artist.to_lowercase().contains(&query))
                 })
                 .map(|(index, _)| index)
@@ -104,8 +105,8 @@ impl LibraryFeature {
                 if let Err(error) = self.background.start_artwork_scan(artwork_paths) {
                     eprintln!("{error}");
                 }
-                let warning = if let Some(error) = &library.scan_error {
-                    Some(error.clone())
+                let warning = if let Some(error) = library.scan_error.clone() {
+                    Some(error)
                 } else if library.unreadable_directories > 0 {
                     Some(format!(
                         "Skipped {} unreadable director{} while scanning",
@@ -143,7 +144,7 @@ impl LibraryFeature {
             self.model
                 .albums
                 .get(index)
-                .map_or(true, |album| album.tracks.is_empty())
+                .is_none_or(|album| album.tracks.is_empty())
         });
         if selected_album_cleared {
             self.view.selected_album = None;

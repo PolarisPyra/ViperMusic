@@ -52,10 +52,6 @@ impl LastFmService {
         &self.status
     }
 
-    pub(crate) fn is_connected(&self, settings: &LastFmSettings) -> bool {
-        settings.session_key.is_some()
-    }
-
     pub(crate) fn can_finish_auth(&self) -> bool {
         self.auth_token.is_some()
     }
@@ -140,15 +136,16 @@ impl LastFmService {
         &mut self,
         enabled: bool,
         settings: &LastFmSettings,
-        track_index: Option<usize>,
-        track: Option<&Track>,
+        current: Option<(usize, &Track)>,
         position: Duration,
     ) {
+        let track_index = current.map(|(index, _)| index);
+        let track = current.map(|(_, track)| track);
         if track_index != self.current_track {
             self.current_track = track_index;
             self.now_playing_track = None;
             self.scrobbled = false;
-            self.track_started_at = unix_time_seconds();
+            self.track_started_at = crate::shared::clock::unix_time_seconds();
         } else if track
             .and_then(|track| track.duration_ms)
             .map(Duration::from_millis)
@@ -156,30 +153,23 @@ impl LastFmService {
         {
             self.now_playing_track = None;
             self.scrobbled = false;
-            self.track_started_at = unix_time_seconds();
+            self.track_started_at = crate::shared::clock::unix_time_seconds();
         }
         self.last_position = position;
-        let Some(track_index) = track_index else {
+        let Some((track_index, track)) = current else {
             return;
         };
-        let Some(track) = track else {
-            return;
-        };
-        if settings.session_key.is_none() {
-            return;
-        }
-        if !enabled {
+        if !enabled || settings.session_key.is_none() {
             return;
         }
 
-        let credentials = settings.clone();
         if self.now_playing_track != Some(track_index) {
             self.now_playing_track = Some(track_index);
             let sender = self.sender.clone();
             let track = track.clone();
+            let credentials = settings.clone();
             thread::spawn(move || {
-                let result =
-                    submit_now_playing(&credentials, &track, session_key_value(&credentials));
+                let result = submit_now_playing(&credentials, &track);
                 let _ = sender.send(Event::NowPlaying(result));
             });
         }
@@ -257,14 +247,10 @@ fn exchange_auth_token(settings: &LastFmSettings, token: &str) -> Result<(String
     })
 }
 
-fn submit_now_playing(
-    settings: &LastFmSettings,
-    track: &Track,
-    session_key: String,
-) -> Result<(), String> {
+fn submit_now_playing(settings: &LastFmSettings, track: &Track) -> Result<(), String> {
     let mut parameters = track_parameters(track);
     parameters.insert("method".to_owned(), "track.updateNowPlaying".to_owned());
-    parameters.insert("sk".to_owned(), session_key);
+    parameters.insert("sk".to_owned(), session_key_value(settings));
     api_call(settings, parameters).map(|_| ())
 }
 
@@ -323,10 +309,4 @@ fn api_call(
         return Err(format!("Last.fm: {message}"));
     }
     Ok(response)
-}
-
-fn unix_time_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }

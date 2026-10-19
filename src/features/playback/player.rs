@@ -1,4 +1,4 @@
-use crate::features::library::{Album, Track};
+use crate::features::library::{state::LibraryFeature, Album, Track};
 use rodio::{Decoder, MixerDeviceSink, Player, Source};
 use std::{
     collections::VecDeque,
@@ -119,7 +119,7 @@ pub struct Playback {
     context_tracks: Vec<usize>,
     current_completion: Option<Receiver<()>>,
     current_position_ns: Option<Arc<AtomicU64>>,
-    current_started: Option<Arc<std::sync::atomic::AtomicBool>>,
+    current_started: Option<Arc<AtomicBool>>,
     scheduled_track: Option<ScheduledTrack>,
     gapless_preparation: Option<GaplessPreparation>,
     /// Whether upcoming tracks are shuffled.
@@ -144,22 +144,13 @@ impl Playback {
     /// * `volume` - Volume percentage; values above 100 are clamped during playback.
     pub fn set_volume(&mut self, volume: u8) {
         self.volume = volume;
-        self.apply_volume();
-    }
-
-    /// Temporarily apply a volume value while a volume control is being adjusted.
-    ///
-    /// # Arguments
-    /// * `volume` - Preview volume percentage; values above 100 are clamped during playback.
-    pub fn preview_volume(&mut self, volume: u8) {
-        self.volume = volume;
-        self.apply_volume();
-    }
-
-    fn apply_volume(&self) {
         if let Some(player) = &self.player {
-            player.set_volume(f32::from(self.volume.min(100)) / 100.0);
+            player.set_volume(self.gain());
         }
+    }
+
+    fn gain(&self) -> f32 {
+        f32::from(self.volume.min(100)) / 100.0
     }
 
     /// Return whether a track is currently playing and not paused.
@@ -213,6 +204,34 @@ impl Playback {
             player.play();
         } else {
             player.pause();
+        }
+    }
+
+    /// Pause or resume the current track, or start the selected album, the queue, or shuffle.
+    ///
+    /// # Arguments
+    /// * `library` - Loaded library and the user's album and track selection.
+    pub(crate) fn play_pause(&mut self, library: &LibraryFeature) {
+        let tracks = &library.model.tracks;
+        if self.current.is_some() {
+            self.toggle_pause();
+        } else if let Some(album) = library
+            .view
+            .selected_album
+            .and_then(|index| library.model.albums.get(index))
+        {
+            match library
+                .view
+                .selected_track
+                .filter(|index| album.tracks.contains(index))
+            {
+                Some(track_index) => self.play_track_in_album(album, tracks, track_index),
+                None => self.play_album(album, tracks),
+            }
+        } else if self.has_next() {
+            self.skip_next(tracks);
+        } else if self.shuffle_enabled {
+            self.play_random_track(tracks);
         }
     }
 
@@ -319,13 +338,11 @@ impl Playback {
         if !completed {
             return;
         }
-        if let Some(finished_track) = self.current.take() {
+        if let Some(finished_track) = self.current {
             self.push_history(finished_track);
         }
-        self.current_completion = None;
-        self.current_position_ns = None;
-        self.current_started = None;
         if self.repeat_mode == RepeatMode::One {
+            self.stop_current();
             if let Some(track) = self.history.pop_back() {
                 self.start_track(tracks, track);
             }
@@ -341,15 +358,10 @@ impl Playback {
             self.current_started = Some(scheduled.started);
             return;
         }
+        self.stop_current();
         self.refill_repeating_queue();
         if let Some(next) = self.pop_next_queued_track() {
-            self.player = None;
-            self.queue_input = None;
             self.start_track(tracks, next);
-        } else {
-            self.current = None;
-            self.player = None;
-            self.queue_input = None;
         }
     }
 
@@ -579,21 +591,16 @@ impl Playback {
     }
 
     /// Toggle repeat for the current album or playback context.
-    pub(crate) fn toggle_repeat_all(&mut self, tracks: &[Track]) {
-        let repeat_mode = if self.repeat_mode == RepeatMode::All {
+    pub(crate) fn toggle_repeat_all(&mut self) {
+        self.set_repeat_mode(if self.repeat_mode == RepeatMode::All {
             RepeatMode::Off
         } else {
             RepeatMode::All
-        };
-        self.set_repeat_mode(repeat_mode, tracks);
+        });
     }
 
-    /// Enable repeat for the currently playing track.
-    pub(crate) fn repeat_current_track(&mut self, tracks: &[Track]) {
-        self.set_repeat_mode(RepeatMode::One, tracks);
-    }
-
-    pub(crate) fn set_repeat_mode(&mut self, repeat_mode: RepeatMode, _tracks: &[Track]) {
+    /// Change the repeat mode and drop any gapless track scheduled under the previous mode.
+    pub(crate) fn set_repeat_mode(&mut self, repeat_mode: RepeatMode) {
         self.repeat_mode = repeat_mode;
         self.clear_scheduled_pending();
     }
@@ -636,7 +643,7 @@ impl Playback {
     }
 
     /// Remove a queued track and return it when the index exists.
-    pub(crate) fn remove_queued(&mut self, queue_index: usize, _tracks: &[Track]) -> Option<usize> {
+    pub(crate) fn remove_queued(&mut self, queue_index: usize) -> Option<usize> {
         let removed = self.manual_queue.remove(queue_index);
         if let (Some(removed), Some(scheduled)) = (removed, self.scheduled_track.as_mut()) {
             if scheduled.source == QueueSource::Manual && scheduled.index == removed {
@@ -648,7 +655,7 @@ impl Playback {
     }
 
     /// Move a queued track to a new position.
-    pub(crate) fn move_queued(&mut self, from: usize, to: usize, _tracks: &[Track]) {
+    pub(crate) fn move_queued(&mut self, from: usize, to: usize) {
         if from >= self.manual_queue.len() || to >= self.manual_queue.len() || from == to {
             return;
         }
@@ -745,31 +752,22 @@ impl Playback {
                 }
             }
         }
-        self.manual_queue = self
-            .manual_queue
-            .drain(..)
-            .filter_map(|index| remap.get(index).copied().flatten())
-            .collect();
-        self.auto_queue = self
-            .auto_queue
-            .drain(..)
-            .filter_map(|index| remap.get(index).copied().flatten())
-            .collect();
-        self.return_queue = self
-            .return_queue
-            .drain(..)
-            .filter_map(|index| remap.get(index).copied().flatten())
-            .collect();
-        self.history = self
-            .history
-            .drain(..)
-            .filter_map(|index| remap.get(index).copied().flatten())
-            .collect();
-        self.context_tracks = self
-            .context_tracks
-            .iter()
-            .filter_map(|&index| remap.get(index).copied().flatten())
-            .collect();
+        let new_index = |index: &mut usize| match remap.get(*index).copied().flatten() {
+            Some(remapped) => {
+                *index = remapped;
+                true
+            }
+            None => false,
+        };
+        for queue in [
+            &mut self.manual_queue,
+            &mut self.auto_queue,
+            &mut self.return_queue,
+            &mut self.history,
+        ] {
+            queue.retain_mut(new_index);
+        }
+        self.context_tracks.retain_mut(new_index);
         if let Some(scheduled) = self.scheduled_track.as_mut() {
             if let Some(index) = remap.get(scheduled.index).copied().flatten() {
                 scheduled.index = index;
@@ -817,7 +815,7 @@ impl Playback {
                         .expect("audio output initialized")
                         .mixer(),
                 );
-                player.set_volume(f32::from(self.volume.min(100)) / 100.0);
+                player.set_volume(self.gain());
                 player.append(queue_output);
                 let completion = queue_input.append_with_signal(source);
                 self.player = Some(player);
@@ -829,13 +827,7 @@ impl Playback {
                 self.current = Some(track_index);
             }
             Err(error) => {
-                self.player = None;
-                self.queue_input = None;
-                self.current_completion = None;
-                self.current_position_ns = None;
-                self.current_started = None;
-                self.scheduled_track = None;
-                self.current = None;
+                self.stop_current();
                 self.manual_queue.clear();
                 self.auto_queue.clear();
                 self.error = Some(error);
@@ -863,7 +855,7 @@ impl Playback {
         #[cfg(target_os = "linux")] smb_auth: Option<&crate::features::library::smb::SmbAuth>,
     ) -> Result<Decoder<BufReader<File>>, String> {
         #[cfg(target_os = "linux")]
-        let staged_path = if crate::features::library::smb::is_smb_path(path) {
+        let staged_path = if crate::features::library::is_smb_path(path) {
             let auth = smb_auth.ok_or_else(|| {
                 "Reconnect to the SMB share in Preferences to play this track".to_owned()
             })?;
@@ -913,6 +905,7 @@ impl Playback {
         Ok(decoder)
     }
 
+    /// Drop the active player and every handle tied to the current or scheduled track.
     fn stop_current(&mut self) {
         self.gapless_preparation = None;
         self.player = None;

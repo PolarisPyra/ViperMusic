@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        mpsc::{self, Receiver, TryRecvError},
+        mpsc::{self, Receiver},
         Arc,
     },
 };
@@ -57,7 +57,7 @@ impl ArtworkCache {
         &mut self,
         ctx: &egui::Context,
         album_index: usize,
-        bytes: &[u8],
+        bytes: &Arc<[u8]>,
     ) -> Option<egui::TextureHandle> {
         self.visible_texture_indices.insert(album_index);
         if let Some(texture) = self.textures.get(&album_index).cloned() {
@@ -81,7 +81,7 @@ impl ArtworkCache {
                 }
             }
             if active < 4 {
-                let bytes = bytes.to_vec();
+                let bytes = Arc::clone(bytes);
                 let sender = self.texture_sender.clone();
                 let repaint = ctx.clone();
                 let workers = Arc::clone(&self.texture_workers);
@@ -106,12 +106,7 @@ impl ArtworkCache {
     }
 
     pub(crate) fn poll(&mut self, ctx: &egui::Context) {
-        loop {
-            let result = match self.texture_receiver.try_recv() {
-                Ok(result) => result,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            };
-            let (epoch, album_index, image) = result;
+        while let Ok((epoch, album_index, image)) = self.texture_receiver.try_recv() {
             self.texture_requests.remove(&(epoch, album_index));
             if epoch != self.texture_epoch {
                 continue;

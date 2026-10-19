@@ -1,5 +1,5 @@
 //! Rosé Pine palette adapter. Source: <https://rosepinetheme.com/palette/>
-use super::{Palette, ThemeDefinition};
+use super::palette::{Palette, ThemeDefinition};
 use eframe::egui;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

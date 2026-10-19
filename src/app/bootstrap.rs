@@ -109,6 +109,12 @@ pub fn run() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_fonts(load_app_fonts());
+            cc.egui_ctx.style_mut(|style| {
+                style.spacing.scroll.dormant_background_opacity = 0.0;
+                style.spacing.scroll.active_background_opacity = 0.0;
+                style.spacing.scroll.interact_background_opacity = 0.0;
+                style.interaction.selectable_labels = false;
+            });
             Ok(Box::new(ViperApp::with_settings_result(settings)))
         }),
     )

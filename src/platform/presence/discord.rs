@@ -1,13 +1,24 @@
+use crate::features::library::Track;
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Track details last published to Discord, used to skip redundant activity updates.
 struct PresenceKey {
     track_index: usize,
     title: String,
     artist: String,
     album: String,
     paused: bool,
+}
+
+impl PresenceKey {
+    fn matches(&self, track_index: usize, track: &Track, paused: bool) -> bool {
+        self.track_index == track_index
+            && self.paused == paused
+            && self.title == track.title
+            && self.artist == track.artist
+            && self.album == track.album
+    }
 }
 
 pub(crate) struct DiscordPresence {
@@ -34,7 +45,7 @@ impl DiscordPresence {
     pub(crate) fn update(
         &mut self,
         application_id: Option<&str>,
-        current: Option<(usize, &str, &str, &str, Option<Duration>)>,
+        current: Option<(usize, &Track)>,
         paused: bool,
         position: Duration,
     ) {
@@ -48,7 +59,7 @@ impl DiscordPresence {
         let Some(application_id) = self.application_id.as_deref() else {
             return;
         };
-        let Some((track_index, title, artist, album, duration)) = current else {
+        let Some((track_index, track)) = current else {
             if self.published.take().is_some() {
                 if let Some(client) = &mut self.client {
                     if client.clear_activity().is_err() {
@@ -59,15 +70,13 @@ impl DiscordPresence {
             return;
         };
 
-        let key = PresenceKey {
-            track_index,
-            title: title.to_owned(),
-            artist: artist.to_owned(),
-            album: album.to_owned(),
-            paused,
-        };
         let now = Instant::now();
-        if self.published.as_ref() == Some(&key) && now < self.refresh_after {
+        if now < self.refresh_after
+            && self
+                .published
+                .as_ref()
+                .is_some_and(|published| published.matches(track_index, track, paused))
+        {
             return;
         }
         if now < self.retry_after {
@@ -85,6 +94,12 @@ impl DiscordPresence {
             }
         }
 
+        let (title, artist, album) = (
+            track.title.as_str(),
+            track.artist.as_str(),
+            track.album.as_str(),
+        );
+        let duration = track.duration_ms.map(Duration::from_millis);
         let state = match (artist.is_empty(), album.is_empty()) {
             (true, true) => "Unknown artist".to_owned(),
             (true, false) => album.to_owned(),
@@ -125,7 +140,13 @@ impl DiscordPresence {
             .map(|client| client.set_activity(activity))
         {
             Some(Ok(())) => {
-                self.published = Some(key);
+                self.published = Some(PresenceKey {
+                    track_index,
+                    title: title.to_owned(),
+                    artist: artist.to_owned(),
+                    album: album.to_owned(),
+                    paused,
+                });
                 self.refresh_after = Instant::now() + Duration::from_secs(60);
             }
             Some(Err(_)) | None => {

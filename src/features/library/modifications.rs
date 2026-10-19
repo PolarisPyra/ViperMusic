@@ -49,14 +49,12 @@ pub fn merge_discovered_tracks(library: &mut Library, discovered: DiscoveredTrac
             library.albums[index].tracks.push(track_index);
             index
         } else {
-            let album = &library.tracks[track_index];
             let index = library.albums.len();
-            library.albums.push(Album {
-                title: album.album.trim().to_owned(),
-                artist: album.album_artist.trim().to_owned(),
-                tracks: vec![track_index],
+            library.albums.push(Album::new(
+                &library.tracks[track_index],
+                vec![track_index],
                 art,
-            });
+            ));
             album_indices.insert(key, index);
             index
         };
@@ -65,19 +63,9 @@ pub fn merge_discovered_tracks(library: &mut Library, discovered: DiscoveredTrac
         updated_albums.insert(album_index);
     }
     for album_index in updated_albums {
-        library.albums[album_index].tracks.sort_by(|left, right| {
-            let left = &library.tracks[*left];
-            let right = &library.tracks[*right];
-            left.disc_number
-                .unwrap_or(1)
-                .cmp(&right.disc_number.unwrap_or(1))
-                .then_with(|| {
-                    left.track_number
-                        .unwrap_or(u32::MAX)
-                        .cmp(&right.track_number.unwrap_or(u32::MAX))
-                })
-                .then_with(|| left.path.cmp(&right.path))
-        });
+        library.albums[album_index]
+            .tracks
+            .sort_by(|&left, &right| library.tracks[left].playback_order(&library.tracks[right]));
     }
     added_count
 }

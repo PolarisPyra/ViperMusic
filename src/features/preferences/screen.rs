@@ -1,32 +1,31 @@
-use crate::{platform::persistence::settings::Settings, workbench::WorkbenchState};
-
 use super::state::PreferencesState;
+use crate::{
+    features::library::state::LibraryFeature,
+    platform::{
+        persistence::settings::{LastFmSettings, Settings, StartupView},
+        presence::lastfm::LastFmService,
+    },
+    shared::{
+        action::AppAction,
+        ui::{
+            controls::{action_button, close_button, connection_text_edit, modal_frame},
+            theme::{self, ThemeId},
+        },
+    },
+    workbench::WorkbenchState,
+};
 use eframe::egui;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PreferencesAction {
-    ChooseMusicFolder,
-    ConnectSmbShare,
-    SaveSettings,
-    SaveLastFmSettings,
-    StartLastFmAuth,
-    FinishLastFmAuth,
-    DisconnectLastFm,
-}
 
 pub(crate) fn show(
     ctx: &egui::Context,
     workbench: &mut WorkbenchState,
     preferences: &mut PreferencesState,
     settings: &mut Settings,
-    library: &crate::features::library::state::LibraryFeature,
-    lastfm_status: &str,
-    lastfm_connected: bool,
-    lastfm_username: Option<&str>,
-    lastfm_can_finish_auth: bool,
-    error: &mut Option<String>,
-) -> Option<PreferencesAction> {
-    let colors = crate::shared::ui::theme::colors(ctx);
+    library: &LibraryFeature,
+    lastfm_service: &LastFmService,
+    lastfm_settings: &LastFmSettings,
+) -> Option<AppAction> {
+    let colors = theme::colors(ctx);
     if !workbench.show_preferences {
         return None;
     }
@@ -35,20 +34,14 @@ pub(crate) fn show(
     let screen_size = ctx.screen_rect().size();
     let margin = 24.0_f32.min(screen_size.x * 0.05).min(screen_size.y * 0.05);
     let modal_size = egui::vec2(
-        (screen_size.x - margin * 2.0).min(760.0).max(0.0),
+        (screen_size.x - margin * 2.0).clamp(0.0, 760.0),
         (screen_size.y - margin * 2.0).max(0.0),
     );
     let content_size = (modal_size - egui::vec2(36.0, 36.0)).max(egui::Vec2::ZERO);
     let mut close_requested = false;
 
     let response = egui::Modal::new(egui::Id::new("preferences-modal"))
-        .frame(
-            egui::Frame::new()
-                .fill(colors.panel)
-                .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                .corner_radius(14.0)
-                .inner_margin(egui::Margin::symmetric(18, 18)),
-        )
+        .frame(modal_frame(colors))
         .backdrop_color(colors.backdrop)
         .show(ctx, |ui| {
             ui.set_min_size(content_size);
@@ -72,25 +65,7 @@ pub(crate) fn show(
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(rect, 8.0, colors.hover);
-                    }
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::X,
-                        egui::FontId::new(16.0, egui::FontFamily::Name("phosphor".into())),
-                        if response.hovered() {
-                            colors.text
-                        } else {
-                            colors.muted
-                        },
-                    );
-                    if response.on_hover_text("Close preferences").clicked() {
-                        close_requested = true;
-                    }
+                    close_requested = close_button(ui, "Close preferences");
                 });
             });
 
@@ -106,9 +81,9 @@ pub(crate) fn show(
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     match preferences.category.unwrap_or(Category::General) {
-                        Category::General => show_general(ui, settings, error, &mut action),
+                        Category::General => show_general(ui, settings, &mut action),
                         Category::Connections => {
-                            show_connections(ui, preferences, settings, library, error, &mut action)
+                            show_connections(ui, preferences, settings, library, &mut action)
                         }
                         Category::View => show_view(ui, settings, &mut action),
                         Category::Theme => show_theme(ui, settings, &mut action),
@@ -117,10 +92,8 @@ pub(crate) fn show(
                             ui,
                             preferences,
                             settings,
-                            lastfm_status,
-                            lastfm_connected,
-                            lastfm_username,
-                            lastfm_can_finish_auth,
+                            lastfm_service,
+                            lastfm_settings,
                             &mut action,
                         ),
                         Category::About => {}
@@ -135,7 +108,7 @@ pub(crate) fn show(
 }
 
 fn category_tabs(ui: &mut egui::Ui, preferences: &mut PreferencesState) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     let mut selected = preferences.category.unwrap_or(Category::General);
     egui::ScrollArea::horizontal()
         .id_salt("preferences-category-tabs")
@@ -219,13 +192,8 @@ impl Category {
     }
 }
 
-fn show_general(
-    ui: &mut egui::Ui,
-    settings: &mut Settings,
-    error: &mut Option<String>,
-    action: &mut Option<PreferencesAction>,
-) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+fn show_general(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
+    let colors = theme::colors(ui.ctx());
     ui.set_min_width(420.0);
     ui.add_space(8.0);
     section_title(ui, "Music library");
@@ -262,7 +230,7 @@ fn show_general(
             .corner_radius(7.0)
             .min_size(egui::vec2(112.0, 34.0));
             if ui.add(button).clicked() {
-                *action = Some(PreferencesAction::ChooseMusicFolder);
+                *action = Some(AppAction::ChooseMusicFolder);
             }
         });
     });
@@ -276,16 +244,7 @@ fn show_general(
     let mut new_startup_view = startup_view;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        for (page, label) in [
-            (
-                crate::platform::persistence::settings::StartupView::Home,
-                "Home",
-            ),
-            (
-                crate::platform::persistence::settings::StartupView::Albums,
-                "Albums",
-            ),
-        ] {
+        for (page, label) in [(StartupView::Home, "Home"), (StartupView::Albums, "Albums")] {
             if choice_row(ui, label, new_startup_view == page, "Current startup page").clicked() {
                 new_startup_view = page;
             }
@@ -293,32 +252,36 @@ fn show_general(
     });
     if new_startup_view != startup_view {
         settings.startup_view = new_startup_view;
-        if let Err(save_error) = settings.save() {
-            *error = Some(format!("Could not save settings: {save_error}"));
-        }
+        *action = Some(AppAction::SaveSettings);
     }
 }
 
-fn show_theme(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<PreferencesAction>) {
+fn show_theme(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
     ui.add_space(8.0);
     section_title(ui, "Themes");
     ui.label("Choose a theme for the player.");
     ui.add_space(12.0);
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        for theme in crate::shared::ui::theme::ThemeId::ALL {
-            if choice_row(ui, theme.label(), settings.theme == theme, "Current theme").clicked()
-                && settings.theme != theme
+        for theme_id in ThemeId::ALL {
+            if choice_row(
+                ui,
+                theme_id.label(),
+                settings.theme == theme_id,
+                "Current theme",
+            )
+            .clicked()
+                && settings.theme != theme_id
             {
-                settings.theme = theme;
-                crate::shared::ui::theme::apply(ui.ctx(), theme);
-                *action = Some(PreferencesAction::SaveSettings);
+                settings.theme = theme_id;
+                theme::apply(ui.ctx(), theme_id);
+                *action = Some(AppAction::SaveSettings);
             }
         }
     });
 }
 
-fn show_audio(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<PreferencesAction>) {
+fn show_audio(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
     ui.set_min_width(420.0);
     ui.add_space(8.0);
     section_title(ui, "Playback");
@@ -329,12 +292,12 @@ fn show_audio(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<Pr
         .on_hover_text("Queue the next track before the current track ends.")
         .changed()
     {
-        *action = Some(PreferencesAction::SaveSettings);
+        *action = Some(AppAction::SaveSettings);
     }
 }
 
 fn choice_row(ui: &mut egui::Ui, label: &str, selected: bool, status: &str) -> egui::Response {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
     response.widget_info(|| {
@@ -367,7 +330,7 @@ fn choice_row(ui: &mut egui::Ui, label: &str, selected: bool, status: &str) -> e
         } else {
             egui_phosphor::regular::CIRCLE
         },
-        egui::FontId::new(16.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(16.0),
         if selected {
             colors.accent
         } else {
@@ -402,15 +365,15 @@ fn choice_row(ui: &mut egui::Ui, label: &str, selected: bool, status: &str) -> e
     response
 }
 
-fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<PreferencesAction>) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
+    let colors = theme::colors(ui.ctx());
     ui.add_space(8.0);
     section_title(ui, "Sidebar");
     if ui
         .checkbox(&mut settings.compact_sidebar, "Compact sidebar")
         .changed()
     {
-        *action = Some(PreferencesAction::SaveSettings);
+        *action = Some(AppAction::SaveSettings);
     }
     ui.label(
         egui::RichText::new(
@@ -428,7 +391,7 @@ fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<Pre
         )
         .changed()
     {
-        *action = Some(PreferencesAction::SaveSettings);
+        *action = Some(AppAction::SaveSettings);
     }
     ui.label(
         egui::RichText::new("Show the audio file format on album artwork.")
@@ -437,13 +400,13 @@ fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<Pre
     );
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 fn show_connections(
     ui: &mut egui::Ui,
     preferences: &mut PreferencesState,
     settings: &mut Settings,
-    library: &crate::features::library::state::LibraryFeature,
-    _error: &mut Option<String>,
-    action: &mut Option<PreferencesAction>,
+    library: &LibraryFeature,
+    action: &mut Option<AppAction>,
 ) {
     ui.set_min_width(420.0);
     ui.add_space(8.0);
@@ -453,7 +416,7 @@ fn show_connections(
         let is_smb = settings
             .music_path
             .as_deref()
-            .is_some_and(crate::features::library::smb::is_smb_path);
+            .is_some_and(crate::features::library::is_smb_path);
         let status = if library.scanning && is_smb {
             let completed = library
                 .progress
@@ -480,7 +443,7 @@ fn show_connections(
         );
         ui.add_space(10.0);
         ui.label("Share folder URL");
-        crate::shared::ui::controls::connection_text_edit(
+        connection_text_edit(
             ui,
             &mut preferences.smb_url_draft,
             "smb://server/Music/Albums",
@@ -490,40 +453,23 @@ fn show_connections(
         ui.columns(2, |columns| {
             columns[0].vertical(|ui| {
                 ui.label("Username");
-                crate::shared::ui::controls::connection_text_edit(
-                    ui,
-                    &mut preferences.smb_username,
-                    "Optional",
-                    false,
-                );
+                connection_text_edit(ui, &mut preferences.smb_username, "Optional", false);
             });
             columns[1].vertical(|ui| {
                 ui.label("Workgroup");
-                crate::shared::ui::controls::connection_text_edit(
-                    ui,
-                    &mut preferences.smb_workgroup,
-                    "Optional",
-                    false,
-                );
+                connection_text_edit(ui, &mut preferences.smb_workgroup, "Optional", false);
             });
         });
         ui.add_space(8.0);
         ui.label("Password");
-        crate::shared::ui::controls::connection_text_edit(
-            ui,
-            &mut preferences.smb_password,
-            "Optional",
-            true,
-        );
+        connection_text_edit(ui, &mut preferences.smb_password, "Optional", true);
         ui.add_space(8.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 38.0),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
-                if crate::shared::ui::controls::action_button(ui, "Connect and scan", true)
-                    .clicked()
-                {
-                    *action = Some(PreferencesAction::ConnectSmbShare);
+                if action_button(ui, "Connect and scan", true).clicked() {
+                    *action = Some(AppAction::ConnectSmbShare);
                 }
             },
         );
@@ -535,13 +481,12 @@ fn show_services(
     ui: &mut egui::Ui,
     preferences: &mut PreferencesState,
     settings: &mut Settings,
-    lastfm_status: &str,
-    lastfm_connected: bool,
-    lastfm_username: Option<&str>,
-    lastfm_can_finish_auth: bool,
-    action: &mut Option<PreferencesAction>,
+    lastfm_service: &LastFmService,
+    lastfm_settings: &LastFmSettings,
+    action: &mut Option<AppAction>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let lastfm_status = lastfm_service.status();
+    let colors = theme::colors(ui.ctx());
     ui.set_min_width(420.0);
     ui.add_space(8.0);
     section_title(ui, "Last.fm scrobbling");
@@ -554,9 +499,9 @@ fn show_services(
         )
         .changed()
     {
-        *action = Some(PreferencesAction::SaveSettings);
+        *action = Some(AppAction::SaveSettings);
     }
-    let status = match lastfm_username {
+    let status = match lastfm_settings.username.as_deref() {
         Some(username) if lastfm_status == "Not connected" => {
             format!("Connected as {username}")
         }
@@ -566,7 +511,7 @@ fn show_services(
     ui.label(egui::RichText::new(status).size(11.0).color(colors.muted));
     ui.add_space(12.0);
     ui.label("Last.fm API key");
-    crate::shared::ui::controls::connection_text_edit(
+    connection_text_edit(
         ui,
         &mut preferences.lastfm_api_key_draft,
         "Enter your API key",
@@ -574,7 +519,7 @@ fn show_services(
     );
     ui.add_space(8.0);
     ui.label("Last.fm shared secret");
-    crate::shared::ui::controls::connection_text_edit(
+    connection_text_edit(
         ui,
         &mut preferences.lastfm_api_secret_draft,
         "Enter your API shared secret",
@@ -588,21 +533,18 @@ fn show_services(
     );
     ui.add_space(12.0);
     ui.horizontal_wrapped(|ui| {
-        if crate::shared::ui::controls::action_button(ui, "Save API credentials", true).clicked() {
-            *action = Some(PreferencesAction::SaveLastFmSettings);
+        if action_button(ui, "Save API credentials", true).clicked() {
+            *action = Some(AppAction::SaveLastFmSettings);
         }
-        if crate::shared::ui::controls::action_button(ui, "Connect Last.fm", true).clicked() {
-            *action = Some(PreferencesAction::StartLastFmAuth);
+        if action_button(ui, "Connect Last.fm", true).clicked() {
+            *action = Some(AppAction::StartLastFmAuth);
         }
-        if lastfm_can_finish_auth
-            && crate::shared::ui::controls::action_button(ui, "Finish sign-in", true).clicked()
+        if lastfm_service.can_finish_auth() && action_button(ui, "Finish sign-in", true).clicked() {
+            *action = Some(AppAction::FinishLastFmAuth);
+        }
+        if lastfm_settings.session_key.is_some() && action_button(ui, "Disconnect", true).clicked()
         {
-            *action = Some(PreferencesAction::FinishLastFmAuth);
-        }
-        if lastfm_connected
-            && crate::shared::ui::controls::action_button(ui, "Disconnect", true).clicked()
-        {
-            *action = Some(PreferencesAction::DisconnectLastFm);
+            *action = Some(AppAction::DisconnectLastFm);
         }
     });
 
@@ -618,12 +560,12 @@ fn show_services(
             )
             .changed()
         {
-            *action = Some(PreferencesAction::SaveSettings);
+            *action = Some(AppAction::SaveSettings);
         }
     });
     ui.add_space(18.0);
     ui.label("Discord Application ID");
-    crate::shared::ui::controls::connection_text_edit(
+    connection_text_edit(
         ui,
         &mut preferences.discord_application_id_draft,
         "Enter your Discord application ID",
@@ -640,17 +582,16 @@ fn show_services(
         egui::vec2(ui.available_width(), 38.0),
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
-            if crate::shared::ui::controls::action_button(ui, "Save", true).clicked() {
+            if action_button(ui, "Save", true).clicked() {
                 settings.discord_application_id =
                     match preferences.discord_application_id_draft.trim() {
                         "" => None,
                         id => Some(id.to_owned()),
                     };
-                *action = Some(PreferencesAction::SaveSettings);
+                *action = Some(AppAction::SaveDiscordApplicationId);
             }
         },
     );
-
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {

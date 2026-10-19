@@ -1,5 +1,6 @@
 use crate::{
     platform::persistence::settings::{Settings, StartupView},
+    shared::ui::theme,
     workbench::{Page, WorkbenchState},
 };
 use eframe::egui;
@@ -27,36 +28,29 @@ pub(in crate::workbench) fn show(
     settings: &mut Settings,
     workbench: &mut WorkbenchState,
 ) -> Option<String> {
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let colors = theme::colors(ctx);
     let mut error = None;
     let panel_id = egui::Id::new("library-sidebar");
     let resize_state_id = panel_id.with("mode");
-    let mut resize_state = ctx
-        .data(|data| data.get_temp::<ResizeState>(resize_state_id))
-        .unwrap_or(ResizeState {
-            compact: settings.compact_sidebar,
-            width: if settings.compact_sidebar {
-                COMPACT_WIDTH
-            } else {
-                settings
-                    .left_panel_width
-                    .clamp(MIN_EXPANDED_WIDTH, MAX_WIDTH)
-            },
-            drag_start: None,
-        });
-
-    // Preference changes reset the width; drag changes retain the same panel and drag handle.
-    if resize_state.compact != settings.compact_sidebar {
-        ctx.data_mut(|data| data.remove::<egui::containers::panel::PanelState>(panel_id));
-        resize_state.compact = settings.compact_sidebar;
-        resize_state.width = if settings.compact_sidebar {
+    let preferred = || ResizeState {
+        compact: settings.compact_sidebar,
+        width: if settings.compact_sidebar {
             COMPACT_WIDTH
         } else {
             settings
                 .left_panel_width
                 .clamp(MIN_EXPANDED_WIDTH, MAX_WIDTH)
-        };
-        resize_state.drag_start = None;
+        },
+        drag_start: None,
+    };
+    let mut resize_state = ctx
+        .data(|data| data.get_temp::<ResizeState>(resize_state_id))
+        .unwrap_or_else(preferred);
+
+    // Preference changes reset the width; drag changes retain the same panel and drag handle.
+    if resize_state.compact != settings.compact_sidebar {
+        ctx.data_mut(|data| data.remove::<egui::containers::panel::PanelState>(panel_id));
+        resize_state = preferred();
     }
     let panel_width = resize_state.width.clamp(COMPACT_WIDTH, MAX_WIDTH);
     egui::SidePanel::left(panel_id)
@@ -70,26 +64,11 @@ pub(in crate::workbench) fn show(
         .show(ctx, |ui| {
             // Switch the nav layout with the live width so labels do not clip while resizing.
             let compact = resize_state.width < COMPACT_THRESHOLD;
-            nav_item(
-                ui,
-                "Home",
-                egui_phosphor::regular::HOUSE_SIMPLE,
-                Page::Home,
-                compact,
-                workbench,
-                settings,
-                &mut error,
-            );
-            nav_item(
-                ui,
-                "Albums",
-                egui_phosphor::regular::DISC,
-                Page::Albums,
-                compact,
-                workbench,
-                settings,
-                &mut error,
-            );
+            for page in [Page::Home, Page::Albums] {
+                if let Some(save_error) = nav_item(ui, page, compact, workbench, settings) {
+                    error = Some(save_error);
+                }
+            }
             let content_rect = ui.max_rect();
             let handle_rect = egui::Rect::from_min_max(
                 egui::pos2(content_rect.right() - 6.0, content_rect.top()),
@@ -164,17 +143,27 @@ pub(in crate::workbench) fn show(
     error
 }
 
+/// Draw a sidebar navigation entry with a context menu for choosing the startup page.
+///
+/// # Returns
+/// A message describing a settings save failure, if any.
 fn nav_item(
     ui: &mut egui::Ui,
-    label: &str,
-    icon: &str,
     page: Page,
     compact: bool,
     workbench: &mut WorkbenchState,
     settings: &mut Settings,
-    error: &mut Option<String>,
-) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+) -> Option<String> {
+    let (label, icon, startup_view) = match page {
+        Page::Home => (
+            "Home",
+            egui_phosphor::regular::HOUSE_SIMPLE,
+            StartupView::Home,
+        ),
+        Page::Albums => ("Albums", egui_phosphor::regular::DISC, StartupView::Albums),
+    };
+    let mut error = None;
+    let colors = theme::colors(ui.ctx());
     let selected = workbench.page == page;
     let size = egui::vec2(ui.available_width(), 40.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -202,7 +191,7 @@ fn nav_item(
         icon_center,
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::new(18.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(18.0),
         icon_tint,
     );
     let response = if compact {
@@ -222,21 +211,13 @@ fn nav_item(
     }
     response.context_menu(|ui| {
         if ui.button(format!("Set {label} as startup view")).clicked() {
-            settings.startup_view = match page {
-                Page::Home => StartupView::Home,
-                Page::Albums => StartupView::Albums,
-            };
+            settings.startup_view = startup_view;
             if let Err(save_error) = settings.save() {
-                *error = Some(format!("Could not save settings: {save_error}"));
+                error = Some(format!("Could not save settings: {save_error}"));
             }
             ui.close_menu();
         }
-        if settings.startup_view
-            == match page {
-                Page::Home => StartupView::Home,
-                Page::Albums => StartupView::Albums,
-            }
-        {
+        if settings.startup_view == startup_view {
             ui.label(
                 egui::RichText::new("Current startup view")
                     .size(10.0)
@@ -244,4 +225,5 @@ fn nav_item(
             );
         }
     });
+    error
 }

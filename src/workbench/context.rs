@@ -21,15 +21,3 @@ pub(crate) struct WorkbenchContext<'a> {
     pub(crate) artwork_cache: &'a mut ArtworkCache,
     pub(crate) error: &'a mut Option<String>,
 }
-
-/// User actions that the application layer handles after rendering the workbench.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WorkbenchAction {
-    ChooseMusicFolder,
-    SaveSettings,
-    ConnectSmbShare,
-    SaveLastFmSettings,
-    StartLastFmAuth,
-    FinishLastFmAuth,
-    DisconnectLastFm,
-}

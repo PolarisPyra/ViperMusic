@@ -1,5 +1,7 @@
+use super::database;
+use rusqlite::{params, types::Type, Connection, OptionalExtension};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -113,113 +115,6 @@ pub struct SambaSettings {
     pub workgroup: String,
 }
 
-/// Load saved SMB connection details, migrating any legacy password to the OS credential store.
-///
-/// # Returns
-/// The saved connection, or `None` when no connection is configured.
-///
-/// # Errors
-/// Returns an I/O error if the database cannot be read or migrated.
-pub fn load_samba_settings() -> io::Result<Option<SambaSettings>> {
-    use rusqlite::OptionalExtension;
-
-    let connection = super::database::open()?;
-    let saved = connection
-        .query_row(
-            "SELECT share_url, username, password, workgroup
-             FROM samba_settings WHERE id = 1",
-            [],
-            |row| {
-                Ok(SambaSettings {
-                    share_url: row.get(0)?,
-                    username: row.get(1)?,
-                    password: SecretString::from(row.get::<_, String>(2)?),
-                    workgroup: row.get(3)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(super::database::database_error)?;
-    let Some(mut saved) = saved else {
-        return Ok(None);
-    };
-
-    let legacy_password = saved.password.expose_secret().to_owned();
-    let entry = samba_keyring_entry()?;
-    match entry.get_password() {
-        Ok(password) => saved.password = SecretString::from(password),
-        Err(keyring::Error::NoEntry) => {
-            if !legacy_password.is_empty() {
-                entry
-                    .set_password(&legacy_password)
-                    .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-                saved.password = SecretString::from(legacy_password.clone());
-            }
-        }
-        Err(error) => return Err(io::Error::new(ErrorKind::Other, error.to_string())),
-    }
-
-    if !legacy_password.is_empty() {
-        connection
-            .pragma_update(None, "secure_delete", "ON")
-            .map_err(super::database::database_error)?;
-        connection
-            .execute("UPDATE samba_settings SET password = '' WHERE id = 1", [])
-            .map_err(super::database::database_error)?;
-        connection
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
-            .map_err(super::database::database_error)?;
-    }
-    Ok(Some(saved))
-}
-
-/// Persist SMB connection details, storing the password in the OS credential store.
-///
-/// # Arguments
-/// * `settings` - Share URL and credentials to save.
-///
-/// # Errors
-/// Returns an I/O error if the database cannot be updated.
-pub fn save_samba_settings(settings: &SambaSettings) -> io::Result<()> {
-    let entry = samba_keyring_entry()?;
-    if settings.password.expose_secret().is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(error) => return Err(io::Error::new(ErrorKind::Other, error.to_string())),
-        }
-    } else {
-        entry
-            .set_password(settings.password.expose_secret())
-            .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-    }
-
-    let connection = super::database::open()?;
-    connection
-        .pragma_update(None, "secure_delete", "ON")
-        .map_err(super::database::database_error)?;
-    connection
-        .execute(
-            "INSERT INTO samba_settings (id, share_url, username, password, workgroup)
-             VALUES (1, ?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-                share_url=excluded.share_url,
-                username=excluded.username,
-                password=excluded.password,
-                workgroup=excluded.workgroup",
-            rusqlite::params![
-                settings.share_url,
-                settings.username,
-                "",
-                settings.workgroup,
-            ],
-        )
-        .map_err(super::database::database_error)?;
-    connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(super::database::database_error)?;
-    Ok(())
-}
-
 #[derive(Clone, Debug, Default)]
 /// Last.fm application credentials and authenticated session.
 pub struct LastFmSettings {
@@ -237,94 +132,144 @@ const LASTFM_KEYRING_SERVICE: &str = "viper-music-lastfm";
 const SAMBA_KEYRING_SERVICE: &str = "viper-music-samba";
 const DISCORD_KEYRING_SERVICE: &str = "viper-music-discord";
 
-fn samba_keyring_entry() -> io::Result<keyring::Entry> {
-    keyring::Entry::new(SAMBA_KEYRING_SERVICE, "password")
-        .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))
+fn keyring_entry(service: &str, name: &str) -> io::Result<keyring::Entry> {
+    keyring::Entry::new(service, name).map_err(io::Error::other)
 }
 
-fn discord_keyring_entry() -> io::Result<keyring::Entry> {
-    keyring::Entry::new(DISCORD_KEYRING_SERVICE, "application-id")
-        .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))
-}
-
-fn load_discord_application_id(legacy_value: Option<String>) -> io::Result<Option<String>> {
-    let entry = discord_keyring_entry()?;
-    let application_id = match entry.get_password() {
-        Ok(value) => Some(value),
-        Err(keyring::Error::NoEntry) => {
-            if let Some(value) = legacy_value.as_deref().filter(|value| !value.is_empty()) {
-                entry
-                    .set_password(value)
-                    .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-                Some(value.to_owned())
-            } else {
-                None
-            }
-        }
-        Err(error) => return Err(io::Error::new(ErrorKind::Other, error.to_string())),
-    };
-
-    if legacy_value.is_some() {
-        let connection = super::database::open()?;
-        connection
-            .pragma_update(None, "secure_delete", "ON")
-            .map_err(super::database::database_error)?;
-        connection
-            .execute(
-                "UPDATE app_settings SET discord_application_id = NULL WHERE id = 1",
-                [],
-            )
-            .map_err(super::database::database_error)?;
-        connection
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
-            .map_err(super::database::database_error)?;
-    }
-
-    Ok(application_id)
-}
-
-fn save_discord_application_id(application_id: Option<&str>) -> io::Result<()> {
-    let entry = discord_keyring_entry()?;
-    match application_id.filter(|value| !value.is_empty()) {
-        Some(value) => entry
-            .set_password(value)
-            .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string())),
-        None => match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(io::Error::new(ErrorKind::Other, error.to_string())),
-        },
-    }
-}
-
-fn lastfm_keyring_entry(name: &str) -> io::Result<keyring::Entry> {
-    keyring::Entry::new(LASTFM_KEYRING_SERVICE, name)
-        .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))
-}
-
-fn load_lastfm_secret(name: &str, legacy_value: Option<String>) -> io::Result<Option<String>> {
-    let entry = lastfm_keyring_entry(name)?;
+/// Read a credential, migrating a non-empty legacy SQLite value when the keyring has none.
+fn load_secret(entry: &keyring::Entry, legacy_value: Option<&str>) -> io::Result<Option<String>> {
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => {
             let Some(value) = legacy_value.filter(|value| !value.is_empty()) else {
                 return Ok(None);
             };
-            entry
-                .set_password(&value)
-                .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-            Ok(Some(value))
+            entry.set_password(value).map_err(io::Error::other)?;
+            Ok(Some(value.to_owned()))
         }
-        Err(error) => Err(io::Error::new(ErrorKind::Other, error.to_string())),
+        Err(error) => Err(io::Error::other(error)),
     }
+}
+
+/// Store a credential, deleting it when the value is absent or empty.
+fn save_secret(entry: &keyring::Entry, value: Option<&str>) -> io::Result<()> {
+    match value.filter(|value| !value.is_empty()) {
+        Some(value) => entry.set_password(value).map_err(io::Error::other),
+        None => match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(io::Error::other(error)),
+        },
+    }
+}
+
+/// Overwrite plaintext credentials in SQLite and flush them from the WAL and free pages.
+fn scrub(
+    connection: &Connection,
+    update: &str,
+    parameters: impl rusqlite::Params,
+    vacuum: bool,
+) -> io::Result<()> {
+    connection
+        .pragma_update(None, "secure_delete", "ON")
+        .map_err(database::database_error)?;
+    connection
+        .execute(update, parameters)
+        .map_err(database::database_error)?;
+    connection
+        .execute_batch(if vacuum {
+            "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"
+        } else {
+            "PRAGMA wal_checkpoint(TRUNCATE);"
+        })
+        .map_err(database::database_error)
+}
+
+/// Load saved SMB connection details, migrating any legacy password to the OS credential store.
+///
+/// # Returns
+/// The saved connection, or `None` when no connection is configured.
+///
+/// # Errors
+/// Returns an I/O error if the database or credential store cannot be read or migrated.
+pub fn load_samba_settings() -> io::Result<Option<SambaSettings>> {
+    let connection = database::open()?;
+    let saved = connection
+        .query_row(
+            "SELECT share_url, username, password, workgroup
+             FROM samba_settings WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(database::database_error)?;
+    let Some((share_url, username, legacy_password, workgroup)) = saved else {
+        return Ok(None);
+    };
+    let password = load_secret(
+        &keyring_entry(SAMBA_KEYRING_SERVICE, "password")?,
+        Some(&legacy_password),
+    )?
+    .unwrap_or_default();
+    if !legacy_password.is_empty() {
+        scrub(
+            &connection,
+            "UPDATE samba_settings SET password = '' WHERE id = 1",
+            [],
+            true,
+        )?;
+    }
+    Ok(Some(SambaSettings {
+        share_url,
+        username,
+        password: SecretString::from(password),
+        workgroup,
+    }))
+}
+
+/// Persist SMB connection details, storing the password in the OS credential store.
+///
+/// # Arguments
+/// * `settings` - Share URL and credentials to save.
+///
+/// # Errors
+/// Returns an I/O error if the database or credential store cannot be updated.
+pub fn save_samba_settings(settings: &SambaSettings) -> io::Result<()> {
+    save_secret(
+        &keyring_entry(SAMBA_KEYRING_SERVICE, "password")?,
+        Some(settings.password.expose_secret()),
+    )?;
+    scrub(
+        &database::open()?,
+        "INSERT INTO samba_settings (id, share_url, username, password, workgroup)
+         VALUES (1, ?1, ?2, '', ?3)
+         ON CONFLICT(id) DO UPDATE SET
+            share_url=excluded.share_url,
+            username=excluded.username,
+            password='',
+            workgroup=excluded.workgroup",
+        params![settings.share_url, settings.username, settings.workgroup],
+        false,
+    )
 }
 
 /// Load Last.fm credentials from the operating system's credential store.
 ///
 /// Legacy plaintext SQLite credentials are migrated to the keyring on first load.
+///
+/// # Returns
+/// The saved credentials and session, or defaults when none are configured.
+///
+/// # Errors
+/// Returns an I/O error if the database or credential store cannot be read or migrated.
 pub fn load_lastfm_settings() -> io::Result<LastFmSettings> {
-    use rusqlite::OptionalExtension;
-
-    let connection = super::database::open()?;
+    let connection = database::open()?;
     let legacy = connection
         .query_row(
             "SELECT api_key, api_secret, session_key, username
@@ -340,79 +285,64 @@ pub fn load_lastfm_settings() -> io::Result<LastFmSettings> {
             },
         )
         .optional()
-        .map_err(super::database::database_error)?;
-    let Some(legacy) = legacy else {
+        .map_err(database::database_error)?;
+    let Some((api_key, api_secret, session_key, username)) = legacy else {
         return Ok(LastFmSettings::default());
     };
 
-    let needs_migration = !legacy.0.is_empty() || !legacy.1.is_empty() || legacy.2.is_some();
-    let api_key = load_lastfm_secret("api-key", Some(legacy.0))?.unwrap_or_default();
-    let api_secret = load_lastfm_secret("api-secret", Some(legacy.1))?.unwrap_or_default();
-    let session_key = load_lastfm_secret("session-key", legacy.2)?;
-
-    if needs_migration {
-        connection
-            .pragma_update(None, "secure_delete", "ON")
-            .map_err(super::database::database_error)?;
-        connection
-            .execute(
-                "UPDATE lastfm_settings SET api_key = '', api_secret = '', session_key = NULL
-                 WHERE id = 1",
-                [],
-            )
-            .map_err(super::database::database_error)?;
-        connection
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
-            .map_err(super::database::database_error)?;
+    let load = |name, legacy: Option<&str>| {
+        load_secret(&keyring_entry(LASTFM_KEYRING_SERVICE, name)?, legacy)
+    };
+    let settings = LastFmSettings {
+        api_key: load("api-key", Some(&api_key))?.unwrap_or_default().into(),
+        api_secret: load("api-secret", Some(&api_secret))?
+            .unwrap_or_default()
+            .into(),
+        session_key: load("session-key", session_key.as_deref())?.map(SecretString::from),
+        username,
+    };
+    if !api_key.is_empty() || !api_secret.is_empty() || session_key.is_some() {
+        scrub(
+            &connection,
+            "UPDATE lastfm_settings SET api_key = '', api_secret = '', session_key = NULL
+             WHERE id = 1",
+            [],
+            true,
+        )?;
     }
-
-    Ok(LastFmSettings {
-        api_key: SecretString::from(api_key),
-        api_secret: SecretString::from(api_secret),
-        session_key: session_key.map(SecretString::from),
-        username: legacy.3,
-    })
+    Ok(settings)
 }
 
 /// Persist Last.fm API credentials and the authorized session in the OS keyring.
+///
+/// # Arguments
+/// * `settings` - Credentials, session, and account name to save.
+///
+/// # Errors
+/// Returns an I/O error if the database or credential store cannot be updated.
 pub fn save_lastfm_settings(settings: &LastFmSettings) -> io::Result<()> {
-    lastfm_keyring_entry("api-key")?
-        .set_password(settings.api_key.expose_secret())
-        .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-    lastfm_keyring_entry("api-secret")?
-        .set_password(settings.api_secret.expose_secret())
-        .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-    let session_entry = lastfm_keyring_entry("session-key")?;
-    if let Some(session_key) = settings.session_key.as_ref() {
-        session_entry
-            .set_password(session_key.expose_secret())
-            .map_err(|error| io::Error::new(ErrorKind::Other, error.to_string()))?;
-    } else if let Err(error) = session_entry.delete_credential() {
-        if !matches!(error, keyring::Error::NoEntry) {
-            return Err(io::Error::new(ErrorKind::Other, error.to_string()));
-        }
+    for (name, value) in [
+        ("api-key", Some(settings.api_key.expose_secret())),
+        ("api-secret", Some(settings.api_secret.expose_secret())),
+        (
+            "session-key",
+            settings
+                .session_key
+                .as_ref()
+                .map(ExposeSecret::expose_secret),
+        ),
+    ] {
+        save_secret(&keyring_entry(LASTFM_KEYRING_SERVICE, name)?, value)?;
     }
-
-    let connection = super::database::open()?;
-    connection
-        .pragma_update(None, "secure_delete", "ON")
-        .map_err(super::database::database_error)?;
-    connection
-        .execute(
-            "INSERT INTO lastfm_settings (id, api_key, api_secret, session_key, username)
-             VALUES (1, ?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-                api_key=excluded.api_key,
-                api_secret=excluded.api_secret,
-                session_key=excluded.session_key,
-                username=excluded.username",
-            rusqlite::params!["", "", Option::<String>::None, settings.username,],
-        )
-        .map_err(super::database::database_error)?;
-    connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(super::database::database_error)?;
-    Ok(())
+    scrub(
+        &database::open()?,
+        "INSERT INTO lastfm_settings (id, api_key, api_secret, session_key, username)
+         VALUES (1, '', '', NULL, ?1)
+         ON CONFLICT(id) DO UPDATE SET
+            api_key='', api_secret='', session_key=NULL, username=excluded.username",
+        [&settings.username],
+        false,
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -499,7 +429,6 @@ impl Default for Settings {
         }
     }
 }
-
 impl Settings {
     /// Load settings from SQLite, migrating legacy settings when necessary.
     ///
@@ -509,155 +438,86 @@ impl Settings {
     /// # Errors
     /// Returns an I/O error when settings cannot be decoded or persisted.
     pub fn load() -> io::Result<Self> {
-        use rusqlite::OptionalExtension;
-
-        let connection = super::database::open()?;
+        let connection = database::open()?;
         let stored = connection
             .query_row(
                 "SELECT music_path, window_width, window_height, startup_view,
                         left_panel_width, left_panel_hidden, right_panel_width, volume,
-                album_sort, sort_ascending, discord_application_id, album_layout, compact_sidebar, theme,
-                        lyrics_panel_open, discord_rich_presence_enabled,
+                        album_sort, sort_ascending, discord_application_id, album_layout,
+                        compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                         gapless_playback, album_list_column_widths, album_format_badges,
                         lastfm_scrobbling_enabled
                  FROM app_settings WHERE id = 1",
                 [],
                 |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<f64>>(1)?,
-                        row.get::<_, Option<f64>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, f32>(4)?,
-                        row.get::<_, bool>(5)?,
-                        row.get::<_, f32>(6)?,
-                        row.get::<_, u8>(7)?,
-                        row.get::<_, String>(8)?,
-                        row.get::<_, bool>(9)?,
-                        row.get::<_, Option<String>>(10)?,
-                        row.get::<_, String>(11)?,
-                        row.get::<_, bool>(12)?,
-                        row.get::<_, String>(13)?,
-                        row.get::<_, bool>(14)?,
-                        row.get::<_, bool>(15)?,
-                        row.get::<_, bool>(16)?,
-                        row.get::<_, String>(17)?,
-                        row.get::<_, bool>(18)?,
-                        row.get::<_, bool>(19)?,
-                    ))
+                    let window_width: Option<f64> = row.get(1)?;
+                    let window_height: Option<f64> = row.get(2)?;
+                    Ok(Self {
+                        music_path: row.get::<_, Option<String>>(0)?.map(PathBuf::from),
+                        window_size: window_width
+                            .zip(window_height)
+                            .map(|(width, height)| [width as f32, height as f32]),
+                        startup_view: json_column(row, 3)?,
+                        left_panel_width: row.get(4)?,
+                        left_panel_hidden: row.get(5)?,
+                        right_panel_width: row.get(6)?,
+                        volume: row.get(7)?,
+                        album_sort: json_column(row, 8)?,
+                        sort_ascending: row.get(9)?,
+                        discord_application_id: row.get(10)?,
+                        album_layout: json_column(row, 11)?,
+                        compact_sidebar: row.get(12)?,
+                        theme: json_column(row, 13)?,
+                        lyrics_panel_open: row.get(14)?,
+                        discord_rich_presence_enabled: row.get(15)?,
+                        gapless_playback: row.get(16)?,
+                        album_list_column_widths: json_column(row, 17)?,
+                        album_format_badges: row.get(18)?,
+                        lastfm_scrobbling_enabled: row.get(19)?,
+                        ..Self::default()
+                    })
                 },
             )
             .optional()
-            .map_err(super::database::database_error)?;
-
-        let mut settings = if let Some((
-            music_path,
-            window_width,
-            window_height,
-            startup_view,
-            left_panel_width,
-            left_panel_hidden,
-            right_panel_width,
-            volume,
-            album_sort,
-            sort_ascending,
-            discord_application_id,
-            album_layout,
-            compact_sidebar,
-            theme,
-            lyrics_panel_open,
-            discord_rich_presence_enabled,
-            gapless_playback,
-            album_list_column_widths,
-            album_format_badges,
-            lastfm_scrobbling_enabled,
-        )) = stored
-        {
-            Self {
-                music_path: music_path.map(PathBuf::from),
-                window_size: window_width
-                    .zip(window_height)
-                    .map(|(width, height)| [width as f32, height as f32]),
-                startup_view: decode_setting(&startup_view)?,
-                left_panel_width,
-                left_panel_hidden,
-                compact_sidebar,
-                theme: decode_setting(&theme)?,
-                right_panel_width,
-                volume,
-                album_sort: decode_setting(&album_sort)?,
-                sort_ascending,
-                discord_application_id,
-                album_layout: decode_setting(&album_layout)?,
-                lyrics_panel_open,
-                discord_rich_presence_enabled,
-                gapless_playback,
-                album_list_column_widths: decode_setting(&album_list_column_widths)?,
-                album_format_badges,
-                lastfm_scrobbling_enabled,
-                ..Self::default()
-            }
-        } else {
-            load_legacy_settings()?.unwrap_or_default()
+            .map_err(database::database_error)?;
+        let first_run = stored.is_none();
+        let mut settings = match stored {
+            Some(settings) => settings,
+            None => load_legacy_settings()?.unwrap_or_default(),
         };
 
-        settings.discord_application_id =
-            load_discord_application_id(settings.discord_application_id.take())?;
-
-        {
-            let mut statement = connection
-                .prepare("SELECT album_key, favorite, rating, play_count, last_played, added FROM album_state")
-                .map_err(super::database::database_error)?;
-            let mut rows = statement
-                .query([])
-                .map_err(super::database::database_error)?;
-            while let Some(row) = rows.next().map_err(super::database::database_error)? {
-                let key: String = row.get(0).map_err(super::database::database_error)?;
-                if row
-                    .get::<_, bool>(1)
-                    .map_err(super::database::database_error)?
-                {
-                    settings.favorite_albums.insert(key.clone());
-                }
-                if let Some(value) = row
-                    .get::<_, Option<u8>>(2)
-                    .map_err(super::database::database_error)?
-                {
-                    settings.album_ratings.insert(key.clone(), value);
-                }
-                if let Some(value) = row
-                    .get::<_, Option<i64>>(3)
-                    .map_err(super::database::database_error)?
-                    .and_then(|value| u64::try_from(value).ok())
-                {
-                    settings.album_play_counts.insert(key.clone(), value);
-                }
-                if let Some(value) = row
-                    .get::<_, Option<i64>>(4)
-                    .map_err(super::database::database_error)?
-                    .and_then(|value| u64::try_from(value).ok())
-                {
-                    settings.album_last_played.insert(key.clone(), value);
-                }
-                if let Some(value) = row
-                    .get::<_, Option<i64>>(5)
-                    .map_err(super::database::database_error)?
-                    .and_then(|value| u64::try_from(value).ok())
-                {
-                    settings.album_added.insert(key, value);
-                }
-            }
+        let legacy_discord_id = settings.discord_application_id.take();
+        settings.discord_application_id = load_secret(
+            &keyring_entry(DISCORD_KEYRING_SERVICE, "application-id")?,
+            legacy_discord_id.as_deref(),
+        )?;
+        if legacy_discord_id.is_some() {
+            scrub(
+                &connection,
+                "UPDATE app_settings SET discord_application_id = NULL WHERE id = 1",
+                [],
+                true,
+            )?;
         }
 
-        if !connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM app_settings WHERE id = 1)",
-                [],
-                |row| row.get::<_, bool>(0),
+        let mut statement = connection
+            .prepare(
+                "SELECT album_key, favorite, rating, play_count, last_played, added
+                 FROM album_state",
             )
-            .map_err(super::database::database_error)?
-        {
+            .map_err(database::database_error)?;
+        let mut rows = statement.query([]).map_err(database::database_error)?;
+        while let Some(row) = rows.next().map_err(database::database_error)? {
+            settings
+                .insert_album_state(row)
+                .map_err(database::database_error)?;
+        }
+
+        if first_run {
             settings.save()?;
+            settings.save_discord_application_id()?;
+            let keys: Vec<_> = settings.album_keys().cloned().collect();
+            settings.save_album_state(keys.iter().map(String::as_str))?;
             for path in legacy_settings_paths()? {
                 let _ = fs::remove_file(path);
             }
@@ -665,97 +525,167 @@ impl Settings {
         Ok(settings)
     }
 
-    /// Save settings and album state in one database transaction.
+    fn insert_album_state(&mut self, row: &rusqlite::Row<'_>) -> rusqlite::Result<()> {
+        let key: String = row.get(0)?;
+        let timestamp = |column| {
+            row.get::<_, Option<i64>>(column)
+                .map(|value| value.and_then(|value| u64::try_from(value).ok()))
+        };
+        if row.get::<_, bool>(1)? {
+            self.favorite_albums.insert(key.clone());
+        }
+        if let Some(value) = row.get::<_, Option<u8>>(2)? {
+            self.album_ratings.insert(key.clone(), value);
+        }
+        if let Some(value) = timestamp(3)? {
+            self.album_play_counts.insert(key.clone(), value);
+        }
+        if let Some(value) = timestamp(4)? {
+            self.album_last_played.insert(key.clone(), value);
+        }
+        if let Some(value) = timestamp(5)? {
+            self.album_added.insert(key, value);
+        }
+        Ok(())
+    }
+
+    /// Save application preferences, excluding per-album state and credentials.
     ///
     /// # Errors
-    /// Returns an I/O error if encoding or database writes fail.
+    /// Returns an I/O error if encoding or the database write fails.
     pub fn save(&self) -> io::Result<()> {
-        save_discord_application_id(self.discord_application_id.as_deref())?;
-        let mut connection = super::database::open()?;
-        let transaction = connection
-            .transaction()
-            .map_err(super::database::database_error)?;
         let (window_width, window_height) =
             self.window_size.map_or((None, None), |[width, height]| {
                 (Some(f64::from(width)), Some(f64::from(height)))
             });
-        transaction.execute(
-            "INSERT INTO app_settings (
-                id, music_path, window_width, window_height, startup_view,
-                left_panel_width, left_panel_hidden, right_panel_width, volume,
-                        album_sort, sort_ascending, discord_application_id, album_layout, compact_sidebar, theme,
-                lyrics_panel_open, discord_rich_presence_enabled,
-                     gapless_playback, album_list_column_widths, album_format_badges,
-                     lastfm_scrobbling_enabled
-                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-             ON CONFLICT(id) DO UPDATE SET
-                music_path=excluded.music_path, window_width=excluded.window_width,
-                window_height=excluded.window_height, startup_view=excluded.startup_view,
-                left_panel_width=excluded.left_panel_width, left_panel_hidden=excluded.left_panel_hidden,
-                right_panel_width=excluded.right_panel_width, volume=excluded.volume,
-                album_sort=excluded.album_sort, sort_ascending=excluded.sort_ascending,
-                discord_application_id=NULL,
-                album_layout=excluded.album_layout,
-                compact_sidebar=excluded.compact_sidebar,
-                theme=excluded.theme,
-                lyrics_panel_open=excluded.lyrics_panel_open,
-                discord_rich_presence_enabled=excluded.discord_rich_presence_enabled,
-                gapless_playback=excluded.gapless_playback,
-                album_list_column_widths=excluded.album_list_column_widths,
-                album_format_badges=excluded.album_format_badges,
-                lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled",
-            rusqlite::params![
-                self.music_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
-                window_width,
-                window_height,
-                encode_setting(&self.startup_view)?,
-                self.left_panel_width,
-                self.left_panel_hidden,
-                self.right_panel_width,
-                self.volume,
-                encode_setting(&self.album_sort)?,
-                self.sort_ascending,
-                Option::<String>::None,
-                encode_setting(&self.album_layout)?,
-                self.compact_sidebar,
-                encode_setting(&self.theme)?,
-                self.lyrics_panel_open,
-                self.discord_rich_presence_enabled,
-                self.gapless_playback,
-                encode_setting(&self.album_list_column_widths)?,
-                self.album_format_badges,
-                self.lastfm_scrobbling_enabled,
-            ],
-        ).map_err(super::database::database_error)?;
+        database::open()?
+            .execute(
+                "INSERT INTO app_settings (
+                    id, music_path, window_width, window_height, startup_view,
+                    left_panel_width, left_panel_hidden, right_panel_width, volume,
+                    album_sort, sort_ascending, discord_application_id, album_layout,
+                    compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
+                    gapless_playback, album_list_column_widths, album_format_badges,
+                    lastfm_scrobbling_enabled
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14,
+                           ?15, ?16, ?17, ?18, ?19)
+                 ON CONFLICT(id) DO UPDATE SET
+                    music_path=excluded.music_path, window_width=excluded.window_width,
+                    window_height=excluded.window_height, startup_view=excluded.startup_view,
+                    left_panel_width=excluded.left_panel_width,
+                    left_panel_hidden=excluded.left_panel_hidden,
+                    right_panel_width=excluded.right_panel_width, volume=excluded.volume,
+                    album_sort=excluded.album_sort, sort_ascending=excluded.sort_ascending,
+                    discord_application_id=NULL, album_layout=excluded.album_layout,
+                    compact_sidebar=excluded.compact_sidebar, theme=excluded.theme,
+                    lyrics_panel_open=excluded.lyrics_panel_open,
+                    discord_rich_presence_enabled=excluded.discord_rich_presence_enabled,
+                    gapless_playback=excluded.gapless_playback,
+                    album_list_column_widths=excluded.album_list_column_widths,
+                    album_format_badges=excluded.album_format_badges,
+                    lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled",
+                params![
+                    self.music_path
+                        .as_deref()
+                        .map(|path| path.to_string_lossy()),
+                    window_width,
+                    window_height,
+                    encode_setting(&self.startup_view)?,
+                    self.left_panel_width,
+                    self.left_panel_hidden,
+                    self.right_panel_width,
+                    self.volume,
+                    encode_setting(&self.album_sort)?,
+                    self.sort_ascending,
+                    encode_setting(&self.album_layout)?,
+                    self.compact_sidebar,
+                    encode_setting(&self.theme)?,
+                    self.lyrics_panel_open,
+                    self.discord_rich_presence_enabled,
+                    self.gapless_playback,
+                    encode_setting(&self.album_list_column_widths)?,
+                    self.album_format_badges,
+                    self.lastfm_scrobbling_enabled,
+                ],
+            )
+            .map(drop)
+            .map_err(database::database_error)
+    }
 
-        transaction
-            .execute("DELETE FROM album_state", [])
-            .map_err(super::database::database_error)?;
-        let keys: BTreeSet<_> = self
-            .favorite_albums
+    /// Persist the Discord application ID in the OS credential store.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the credential store cannot be updated.
+    pub fn save_discord_application_id(&self) -> io::Result<()> {
+        save_secret(
+            &keyring_entry(DISCORD_KEYRING_SERVICE, "application-id")?,
+            self.discord_application_id.as_deref(),
+        )
+    }
+
+    /// Persist favorite, rating, and playback history for the given album keys.
+    ///
+    /// Albums without any stored state are removed from the database.
+    ///
+    /// # Arguments
+    /// * `keys` - Stable album keys whose in-memory state should be written.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the database transaction fails.
+    pub fn save_album_state<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
+        let mut connection = database::open()?;
+        let transaction = connection.transaction().map_err(database::database_error)?;
+        {
+            let mut upsert = transaction
+                .prepare(
+                    "INSERT INTO album_state
+                        (album_key, favorite, rating, play_count, last_played, added)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(album_key) DO UPDATE SET
+                        favorite=excluded.favorite, rating=excluded.rating,
+                        play_count=excluded.play_count, last_played=excluded.last_played,
+                        added=excluded.added",
+                )
+                .map_err(database::database_error)?;
+            let mut delete = transaction
+                .prepare("DELETE FROM album_state WHERE album_key = ?1")
+                .map_err(database::database_error)?;
+            for key in keys {
+                let favorite = self.favorite_albums.contains(key);
+                let rating = self.album_ratings.get(key).copied();
+                let play_count = self.album_play_counts.get(key).copied();
+                let last_played = self.album_last_played.get(key).copied();
+                let added = self.album_added.get(key).copied();
+                let result = if favorite
+                    || rating.is_some()
+                    || play_count.is_some()
+                    || last_played.is_some()
+                    || added.is_some()
+                {
+                    upsert.execute(params![
+                        key,
+                        favorite,
+                        rating,
+                        play_count.map(sqlite_integer),
+                        last_played.map(sqlite_integer),
+                        added.map(sqlite_integer),
+                    ])
+                } else {
+                    delete.execute([key])
+                };
+                result.map_err(database::database_error)?;
+            }
+        }
+        transaction.commit().map_err(database::database_error)
+    }
+
+    fn album_keys(&self) -> impl Iterator<Item = &String> {
+        self.favorite_albums
             .iter()
             .chain(self.album_ratings.keys())
             .chain(self.album_play_counts.keys())
             .chain(self.album_last_played.keys())
             .chain(self.album_added.keys())
-            .collect();
-        for key in keys {
-            transaction.execute(
-                "INSERT INTO album_state (album_key, favorite, rating, play_count, last_played, added)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    key,
-                    self.favorite_albums.contains(key),
-                    self.album_ratings.get(key).copied(),
-                    self.album_play_counts.get(key).copied().map(sqlite_integer),
-                    self.album_last_played.get(key).copied().map(sqlite_integer),
-                    self.album_added.get(key).copied().map(sqlite_integer),
-                ],
-            ).map_err(super::database::database_error)?;
-        }
-        transaction
-            .commit()
-            .map_err(super::database::database_error)
     }
 
     /// Return the path to the application SQLite database.
@@ -766,7 +696,7 @@ impl Settings {
     /// # Errors
     /// Returns an I/O error if the configuration directory is unavailable.
     pub fn file_path() -> io::Result<PathBuf> {
-        super::database::database_path()
+        database::database_path()
     }
 }
 
@@ -774,8 +704,12 @@ fn encode_setting<T: Serialize>(value: &T) -> io::Result<String> {
     serde_json::to_string(value).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
 }
 
-fn decode_setting<T: for<'de> Deserialize<'de>>(value: &str) -> io::Result<T> {
-    serde_json::from_str(value).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
+/// Decode a JSON-encoded setting stored in a text column.
+fn json_column<T: DeserializeOwned>(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<T> {
+    let value: String = row.get(column)?;
+    serde_json::from_str(&value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
 }
 
 fn sqlite_integer(value: u64) -> i64 {
@@ -783,9 +717,9 @@ fn sqlite_integer(value: u64) -> i64 {
 }
 
 fn legacy_settings_paths() -> io::Result<[PathBuf; 6]> {
-    let database = super::database::database_path()?;
-    let previous_database = super::database::previous_database_path()?;
-    let legacy_database = super::database::legacy_database_path()?;
+    let database = database::database_path()?;
+    let previous_database = database::previous_database_path()?;
+    let legacy_database = database::legacy_database_path()?;
     Ok([
         database.with_file_name("settings.json"),
         database.with_file_name("musicplayer.json"),

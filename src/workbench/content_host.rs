@@ -1,11 +1,8 @@
-use super::{Page, WorkbenchAction, WorkbenchContext};
-use crate::features;
+use super::{Page, WorkbenchContext};
+use crate::{features, shared::action::AppAction};
 use eframe::egui;
 
-pub(crate) fn show(
-    ctx: &egui::Context,
-    context: &mut WorkbenchContext<'_>,
-) -> Option<WorkbenchAction> {
+pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> Option<AppAction> {
     match context.state.page {
         Page::Home => features::home::show(
             ctx,
@@ -14,10 +11,7 @@ pub(crate) fn show(
             context.playback,
             context.settings,
             context.artwork_cache,
-        )
-        .map(|action| match action {
-            features::home::HomeAction::ChooseMusicFolder => WorkbenchAction::ChooseMusicFolder,
-        }),
+        ),
         Page::Albums => {
             if let Some(error) = features::albums::track_list::show(
                 ctx,

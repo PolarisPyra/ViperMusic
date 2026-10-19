@@ -1,5 +1,8 @@
 use super::{Lyrics, LyricsFeature, LyricsResult};
-use crate::features::library::Library;
+use crate::{
+    features::{library::Library, playback::Playback},
+    shared::ui::theme,
+};
 use eframe::egui;
 
 const MIN_LYRICS_HEIGHT: f32 = 96.0;
@@ -53,12 +56,12 @@ pub(crate) fn show(
     ui: &mut egui::Ui,
     lyrics: &mut LyricsFeature,
     library: &Library,
-    current_track: Option<usize>,
-    position: std::time::Duration,
+    playback: &Playback,
     persisted_open: &mut bool,
     max_content_height: f32,
 ) {
-    let colors = crate::shared::ui::theme::colors(ctx);
+    let current_track = playback.current;
+    let colors = theme::colors(ctx);
     let open_id = egui::Id::new("album-tracklist-lyrics-open");
     let height_id = egui::Id::new("album-tracklist-lyrics-height");
     let user_resized_id = egui::Id::new("album-tracklist-lyrics-user-resized");
@@ -174,7 +177,7 @@ pub(crate) fn show(
                         .color(colors.subtle),
                 );
                 ui.add_space(8.0);
-                draw_lyrics_content(ui, lyrics_result.as_ref(), position, current_track);
+                draw_lyrics_content(ui, lyrics_result, playback.position(), current_track);
             },
         );
     }
@@ -188,11 +191,11 @@ pub(crate) fn show(
 
 fn draw_lyrics_content(
     ui: &mut egui::Ui,
-    result: Option<&LyricsResult>,
+    result: Option<LyricsResult<'_>>,
     position: std::time::Duration,
     current_track: Option<usize>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     match result {
         Some(LyricsResult::Found(lyrics)) => draw_lyrics_lines(ui, lyrics, position, current_track),
         Some(LyricsResult::Loading) => {
@@ -233,7 +236,7 @@ fn draw_lyrics_lines(
     position: std::time::Duration,
     current_track: Option<usize>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     const ROW_HEIGHT: f32 = 20.0;
     let follow_line_id = egui::Id::new("album-tracklist-lyrics-follow-line");
     let active_line = lyrics.synced.then(|| {
@@ -315,7 +318,7 @@ fn draw_lyrics_lines(
 }
 
 fn draw_lyrics_toggle(ui: &mut egui::Ui, open: &mut bool) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
     draw_action_hover(ui, rect, response.hovered());
     ui.painter().text(
@@ -326,7 +329,7 @@ fn draw_lyrics_toggle(ui: &mut egui::Ui, open: &mut bool) {
         } else {
             egui_phosphor::regular::CARET_UP
         },
-        egui::FontId::new(20.0, egui::FontFamily::Name("phosphor".into())),
+        theme::icon_font(20.0),
         if response.hovered() {
             colors.text
         } else {
@@ -347,7 +350,7 @@ fn draw_lyrics_toggle(ui: &mut egui::Ui, open: &mut bool) {
 }
 
 fn draw_action_hover(ui: &egui::Ui, rect: egui::Rect, hovered: bool) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     if hovered {
         ui.painter().rect_filled(rect, 7.0, colors.hover);
     }

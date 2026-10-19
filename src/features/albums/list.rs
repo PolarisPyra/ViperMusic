@@ -1,10 +1,9 @@
-use crate::platform::persistence::settings::Settings;
-use eframe::egui;
-
-use super::{
+use super::screen::{
     album_format_label, open_album, paint_cover_with_opacity, paint_format_badge, play_album,
     show_album_context_menu, show_shimmer_rect, AlbumScreen,
 };
+use crate::{platform::persistence::settings::Settings, shared::ui::theme};
+use eframe::egui;
 
 const ARTWORK_COLUMN_WIDTH: f32 = 82.0;
 const MIN_COLUMN_WIDTH: f32 = 64.0;
@@ -16,7 +15,7 @@ pub(super) fn show_header(
     settings: &mut Settings,
     error: &mut Option<String>,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     const HEADER_HEIGHT: f32 = 32.0;
     let header = ui
         .allocate_exact_size(egui::vec2(width, HEADER_HEIGHT), egui::Sense::hover())
@@ -115,7 +114,7 @@ pub(super) fn show_album_list(
     viewport: egui::Rect,
     width: f32,
 ) {
-    let colors = crate::shared::ui::theme::colors(ui.ctx());
+    let colors = theme::colors(ui.ctx());
     const ROW_HEIGHT: f32 = 72.0;
     const ROW_GAP: f32 = 1.0;
     let row_step = ROW_HEIGHT + ROW_GAP;
@@ -126,8 +125,7 @@ pub(super) fn show_album_list(
     let first = ((viewport.min.y.max(0.0) / row_step).floor() as usize).min(rows);
     let last = ((viewport.max.y.max(0.0) / row_step).ceil() as usize + 1).min(rows);
 
-    for row in first..last {
-        let album_index = albums[row];
+    for (row, &album_index) in albums.iter().enumerate().take(last).skip(first) {
         let rect = egui::Rect::from_min_size(
             egui::pos2(content.left() + 8.0, rows_top + row as f32 * row_step),
             egui::vec2((width - 16.0).max(0.0), ROW_HEIGHT),
@@ -155,7 +153,6 @@ pub(super) fn show_album_list(
         let Some(album) = screen.library.model.albums.get(album_index) else {
             continue;
         };
-        let format_label = album_format_label(&screen.library.model, album);
         let cover_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 10.0, rect.center().y - 28.0),
             egui::vec2(56.0, 56.0),
@@ -171,12 +168,16 @@ pub(super) fn show_album_list(
                 cover_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 egui_phosphor::regular::DISC,
-                egui::FontId::new(20.0, egui::FontFamily::Name("phosphor".into())),
+                theme::icon_font(20.0),
                 colors.muted,
             );
         }
         if screen.settings.album_format_badges {
-            paint_format_badge(ui, cover_rect, &format_label);
+            paint_format_badge(
+                ui,
+                cover_rect,
+                album_format_label(&screen.library.model, album),
+            );
         }
 
         let columns = column_boundaries(

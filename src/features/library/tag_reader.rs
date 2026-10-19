@@ -10,6 +10,7 @@ use std::{
 };
 use symphonia::core::meta::StandardTagKey;
 
+#[derive(Default)]
 pub(super) struct TrackMetadata {
     pub(super) title: Option<String>,
     pub(super) artist: Option<String>,
@@ -58,7 +59,7 @@ pub(super) fn read_metadata(path: &Path) -> TrackMetadata {
     }
 
     let Some(media) = super::symphonia::probe(path) else {
-        return empty_metadata();
+        return TrackMetadata::default();
     };
     let lookup = |standard_key: StandardTagKey, aliases: &[&str]| {
         media
@@ -191,16 +192,10 @@ fn metadata_from_tagged_file(file: TaggedFile, include_artwork: bool) -> TrackMe
         .flatten();
     let Some(tag) = tag else {
         return TrackMetadata {
-            title: None,
-            artist: None,
-            album: None,
-            album_artist: None,
-            disc_number: None,
-            track_number: None,
             duration_ms,
-            release_year: None,
             audio,
             artwork,
+            ..TrackMetadata::default()
         };
     };
     let text = |key| {
@@ -222,20 +217,5 @@ fn metadata_from_tagged_file(file: TaggedFile, include_artwork: bool) -> TrackMe
             .and_then(|date| date.get(..4)?.parse::<u32>().ok()),
         audio,
         artwork,
-    }
-}
-
-pub(super) fn empty_metadata() -> TrackMetadata {
-    TrackMetadata {
-        title: None,
-        artist: None,
-        album: None,
-        album_artist: None,
-        disc_number: None,
-        track_number: None,
-        duration_ms: None,
-        release_year: None,
-        audio: AudioProperties::default(),
-        artwork: None,
     }
 }
