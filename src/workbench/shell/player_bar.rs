@@ -4,7 +4,10 @@ use crate::{
         playback::{Playback, RepeatMode},
     },
     platform::persistence::settings::Settings,
-    shared::{artwork::ArtworkCache, ui::theme},
+    shared::{
+        artwork::ArtworkCache,
+        ui::{controls::describe_button, theme, toasts::Toasts},
+    },
     workbench::WorkbenchState,
 };
 use eframe::egui;
@@ -18,10 +21,10 @@ pub(in crate::workbench) fn show(
     ctx: &egui::Context,
     workbench: &mut WorkbenchState,
     playback: &mut Playback,
-    library: &LibraryFeature,
+    library: &mut LibraryFeature,
     settings: &mut Settings,
     artwork_cache: &mut ArtworkCache,
-    error: &mut Option<String>,
+    toasts: &mut Toasts,
 ) {
     let colors = theme::colors(ctx);
     egui::TopBottomPanel::bottom("scrubber-controls")
@@ -60,7 +63,7 @@ pub(in crate::workbench) fn show(
                     .max_rect(info_rect)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            show_track_info(ctx, &mut info_ui, library, artwork_cache, current);
+            let open_album = show_track_info(ctx, &mut info_ui, library, artwork_cache, current);
 
             // Anchor the controls to the full bar rect; column sizing otherwise
             // shifts them when the track-info column has no content.
@@ -220,6 +223,16 @@ pub(in crate::workbench) fn show(
                     colors.muted
                 },
             );
+            describe_button(&previous, "Previous track");
+            describe_button(&next, "Next track");
+            describe_button(
+                &play,
+                if playback.is_playing() {
+                    "Pause"
+                } else {
+                    "Play"
+                },
+            );
             let previous = previous.on_hover_text("Previous track");
             let play = play.on_hover_text(if playback.current.is_none() && !play_enabled {
                 "Select an album or turn on Shuffle to play"
@@ -317,6 +330,9 @@ pub(in crate::workbench) fn show(
                 egui::Id::new("player-volume-slider"),
                 egui::Sense::click_and_drag(),
             );
+            volume_response.widget_info(|| {
+                egui::WidgetInfo::slider(true, f64::from(settings.volume), "Volume")
+            });
             let volume_track = egui::Rect::from_center_size(
                 volume_track_area.center(),
                 egui::vec2(volume_track_area.width(), 3.0),
@@ -354,47 +370,74 @@ pub(in crate::workbench) fn show(
             if volume_response.clicked() || volume_response.drag_stopped() {
                 playback.set_volume(settings.volume);
                 if let Err(save_error) = settings.save() {
-                    *error = Some(format!("Could not save settings: {save_error}"));
+                    toasts.push(format!("Could not save settings: {save_error}"));
                 }
             }
 
-            let position = playback.position();
-            let mut seconds = position.as_secs_f64();
             let max_seconds = duration.map_or(0.0, |duration| duration.as_secs_f64());
             ui.horizontal(|ui| {
                 let (position_label, _) =
                     ui.allocate_exact_size(egui::vec2(38.0, 14.0), egui::Sense::hover());
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2((ui.available_width() - 46.0).max(1.0), 14.0),
+                    if max_seconds > 0.0 {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                let track_rect =
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 3.0));
+                let seconds_at = |pointer: egui::Pos2| {
+                    max_seconds
+                        * f64::from(
+                            ((pointer.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0),
+                        )
+                };
+                // Dragging previews the target time; the decoder seeks once on release.
+                let preview_id = response.id.with("seek-preview");
+                if response.dragged() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        ui.data_mut(|data| data.insert_temp(preview_id, seconds_at(pointer)));
+                    }
+                }
+                let preview = ui.data(|data| data.get_temp::<f64>(preview_id));
+                if response.drag_stopped() {
+                    ui.data_mut(|data| data.remove::<f64>(preview_id));
+                    if let Some(target) = preview {
+                        playback.seek(&library.model.tracks, Duration::from_secs_f64(target));
+                    }
+                } else if response.clicked() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        playback.seek(
+                            &library.model.tracks,
+                            Duration::from_secs_f64(seconds_at(pointer)),
+                        );
+                    }
+                }
+                let shown = preview.map_or_else(|| playback.position(), Duration::from_secs_f64);
                 ui.painter().text(
                     egui::pos2(position_label.left(), position_label.center().y),
                     egui::Align2::LEFT_CENTER,
-                    format_time(position),
+                    format_time(shown),
                     egui::FontId::proportional(11.0),
                     colors.subtle,
                 );
-
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2((ui.available_width() - 46.0).max(1.0), 14.0),
-                    egui::Sense::click_and_drag(),
-                );
-                let track_color = colors.surface;
-                let track_rect =
-                    egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 3.0));
-                ui.painter().rect_filled(track_rect, 2.0, track_color);
-
+                ui.painter().rect_filled(track_rect, 2.0, colors.surface);
                 let fraction = if max_seconds > 0.0 {
-                    (seconds / max_seconds).clamp(0.0, 1.0) as f32
+                    (shown.as_secs_f64() / max_seconds).clamp(0.0, 1.0) as f32
                 } else {
                     0.0
                 };
-                let progress_rect = egui::Rect::from_min_max(
-                    track_rect.min,
-                    egui::pos2(
-                        track_rect.left() + track_rect.width() * fraction,
-                        track_rect.bottom(),
-                    ),
-                );
-                ui.painter().rect_filled(progress_rect, 2.0, colors.accent);
                 let knob_x = track_rect.left() + track_rect.width() * fraction;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        track_rect.min,
+                        egui::pos2(knob_x, track_rect.bottom()),
+                    ),
+                    2.0,
+                    colors.accent,
+                );
                 if current.is_some() && duration.is_some() {
                     let thumb_center = egui::pos2(
                         knob_x.round_to_pixel_center(ui.pixels_per_point()),
@@ -406,13 +449,18 @@ pub(in crate::workbench) fn show(
                         colors.text,
                     );
                 }
-
-                if (response.clicked() || response.dragged()) && max_seconds > 0.0 {
-                    if let Some(pointer) = response.interact_pointer_pos() {
-                        let fraction =
-                            ((pointer.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0);
-                        seconds = max_seconds * fraction as f64;
-                        playback.seek(&library.model.tracks, Duration::from_secs_f64(seconds));
+                response.widget_info(|| {
+                    egui::WidgetInfo::slider(
+                        max_seconds > 0.0,
+                        shown.as_secs_f64(),
+                        "Playback position",
+                    )
+                });
+                if max_seconds > 0.0 {
+                    if let Some(pointer) = response.hover_pos() {
+                        response.on_hover_text_at_pointer(format_time(Duration::from_secs_f64(
+                            seconds_at(pointer),
+                        )));
                     }
                 }
 
@@ -436,6 +484,9 @@ pub(in crate::workbench) fn show(
             if playback.is_playing() {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
+            if let Some(album_index) = open_album {
+                workbench.open_album(&mut library.view, album_index);
+            }
         });
 }
 
@@ -458,6 +509,7 @@ fn transport_icon_button(
             egui::Sense::hover()
         },
     );
+    describe_button(&response, tooltip);
     let color = if active {
         colors.accent
     } else if response.hovered() && enabled {
@@ -475,61 +527,79 @@ fn transport_icon_button(
     response.on_hover_text(tooltip)
 }
 
+/// Draw the current track's artwork, title, and artist.
+///
+/// # Returns
+/// The album to open when the user clicked the track details.
 fn show_track_info(
     ctx: &egui::Context,
     ui: &mut egui::Ui,
     library: &LibraryFeature,
     artwork_cache: &mut ArtworkCache,
     current: Option<usize>,
-) {
+) -> Option<usize> {
     let colors = theme::colors(ui.ctx());
-    if let Some(index) = current {
-        let album_index = library
-            .model
-            .track_album
-            .get(index)
-            .copied()
-            .flatten()
-            .map(crate::features::library::AlbumIndex::get);
-        let texture = album_index.and_then(|album_index| {
-            let bytes = library.model.albums.get(album_index)?.art.as_ref()?;
-            artwork_cache.texture(ctx, album_index, bytes)
-        });
-        let Some(track) = library.model.tracks.get(index) else {
-            return;
-        };
-        let cover = ui
-            .allocate_space(egui::vec2(TRACK_ART_SIZE, TRACK_ART_SIZE))
-            .1;
-        if let Some(texture) = texture {
-            ui.painter().image(
-                texture.id(),
-                cover,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-        }
-        ui.add_space(9.0);
-        ui.vertical(|ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&track.title)
-                        .size(15.0)
-                        .strong()
-                        .color(colors.text),
-                )
-                .truncate(),
-            );
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&track.artist)
-                        .size(13.0)
-                        .color(colors.muted),
-                )
-                .truncate(),
-            );
-        });
+    let index = current?;
+    let track = library.model.tracks.get(index)?;
+    let album_index = library
+        .model
+        .track_album
+        .get(index)
+        .copied()
+        .flatten()
+        .map(crate::features::library::AlbumIndex::get);
+    let texture = album_index.and_then(|album_index| {
+        let bytes = library.model.albums.get(album_index)?.art.as_ref()?;
+        artwork_cache.texture(ctx, album_index, bytes)
+    });
+    let start = ui.cursor().min;
+    let cover = ui
+        .allocate_space(egui::vec2(TRACK_ART_SIZE, TRACK_ART_SIZE))
+        .1;
+    if let Some(texture) = texture {
+        ui.painter().image(
+            texture.id(),
+            cover,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
     }
+    ui.add_space(9.0);
+    let text = ui.vertical(|ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&track.title)
+                    .size(15.0)
+                    .strong()
+                    .color(colors.text),
+            )
+            .truncate(),
+        );
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&track.artist)
+                    .size(13.0)
+                    .color(colors.muted),
+            )
+            .truncate(),
+        );
+    });
+    let album_index = album_index?;
+    let area = egui::Rect::from_min_max(start, cover.max.max(text.response.rect.max));
+    let response = ui
+        .interact(
+            area,
+            ui.id().with("now-playing-album"),
+            egui::Sense::click(),
+        )
+        .on_hover_text("Go to album");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Go to playing album")
+    });
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked().then_some(album_index)
 }
 
 fn show_audio_chips(

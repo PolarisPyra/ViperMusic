@@ -3,11 +3,15 @@ use crate::{
         library::{state::LibraryFeature, Album, Library},
         lyrics::LyricsFeature,
         playback::Playback,
+        track_menu,
     },
     platform::persistence::settings::Settings,
     shared::{
         artwork::ArtworkCache,
-        ui::theme::{self, icon_fill_font, icon_font},
+        ui::{
+            theme::{self, icon_fill_font, icon_font},
+            toasts::Toasts,
+        },
     },
 };
 use eframe::egui;
@@ -22,13 +26,15 @@ pub(crate) fn show(
     lyrics: &mut LyricsFeature,
     settings: &mut Settings,
     artwork_cache: &mut ArtworkCache,
-) -> Option<String> {
+    toasts: &mut Toasts,
+) {
     let Some(album_index) = library_feature
         .view
         .selected_album
         .filter(|index| library_feature.model.albums.get(*index).is_some())
     else {
-        return side_panel(ctx, settings, |ui, _| show_empty_album(ui));
+        side_panel(ctx, settings, toasts, |ui, _, _| show_empty_album(ui));
+        return;
     };
 
     let library = &library_feature.model;
@@ -40,8 +46,9 @@ pub(crate) fn show(
     let persisted_lyrics_open = settings.lyrics_panel_open;
     let mut album_state_changed = false;
     let selected_track = &mut library_feature.view.selected_track;
+    let scroll_to_selection = std::mem::take(&mut library_feature.view.scroll_to_selection);
 
-    let mut save_error = side_panel(ctx, settings, |ui, settings| {
+    side_panel(ctx, settings, toasts, |ui, settings, toasts| {
         let content = ui.max_rect();
         ui.set_width(content.width());
         ui.set_min_height(content.height());
@@ -62,11 +69,15 @@ pub(crate) fn show(
         let max_lyrics_height = show_tracks(
             ctx,
             ui,
-            library,
-            playback,
-            selected_track,
-            album_index,
+            TrackRows {
+                library,
+                album,
+                playback: &mut *playback,
+                selected_track,
+                toasts,
+            },
             settings.lyrics_panel_open,
+            scroll_to_selection,
         );
         crate::features::lyrics::panel::show(
             ctx,
@@ -82,24 +93,21 @@ pub(crate) fn show(
     if album_state_changed {
         library_feature.view.album_sort_dirty = true;
         if let Err(error) = settings.save_album_state([album.key.as_str()]) {
-            save_error = Some(format!("Could not save album state: {error}"));
+            toasts.push(format!("Could not save album state: {error}"));
         }
     }
     if settings.lyrics_panel_open != persisted_lyrics_open {
-        save_error = save_settings(settings).or(save_error);
+        save_settings(settings, toasts);
     }
-    save_error
 }
 
 /// Draw the resizable album side panel and persist its width after a resize.
-///
-/// # Returns
-/// A message describing a settings save failure, if any.
 fn side_panel(
     ctx: &egui::Context,
     settings: &mut Settings,
-    add_contents: impl FnOnce(&mut egui::Ui, &mut Settings),
-) -> Option<String> {
+    toasts: &mut Toasts,
+    add_contents: impl FnOnce(&mut egui::Ui, &mut Settings, &mut Toasts),
+) {
     const PANEL_ID: &str = "album-tracklist-side-panel";
     let colors = theme::colors(ctx);
     let output = egui::SidePanel::right(PANEL_ID)
@@ -120,7 +128,7 @@ fn side_panel(
             egui::Frame::new()
                 .fill(colors.panel)
                 .inner_margin(egui::Margin::symmetric(20, 18))
-                .show(ui, |ui| add_contents(ui, settings));
+                .show(ui, |ui| add_contents(ui, settings, toasts));
         });
 
     let resize_response = ctx.read_response(egui::Id::new(PANEL_ID).with("__resize"));
@@ -161,9 +169,8 @@ fn side_panel(
             .rect
             .width()
             .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
-        return save_settings(settings);
+        save_settings(settings, toasts);
     }
-    None
 }
 
 fn show_empty_album(ui: &mut egui::Ui) {
@@ -297,6 +304,14 @@ fn draw_album_preferences(ui: &mut egui::Ui, key: &str, settings: &mut Settings)
             for value in 1..=5 {
                 let (rect, response) =
                     ui.allocate_exact_size(egui::vec2(22.0, 24.0), egui::Sense::click());
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::RadioButton,
+                        true,
+                        value == rating,
+                        format!("Rate {value} out of 5"),
+                    )
+                });
                 let filled = value <= rating;
                 ui.painter().text(
                     rect.center(),
@@ -340,6 +355,9 @@ fn draw_album_preferences(ui: &mut egui::Ui, key: &str, settings: &mut Settings)
                 ui.id().with("album-favorite-heart"),
                 egui::Sense::click(),
             );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, favorite, "Favorite")
+            });
             if response.hovered() {
                 ui.painter().rect_filled(heart, 7.0, colors.hover);
             }
@@ -384,11 +402,10 @@ fn draw_album_preferences(ui: &mut egui::Ui, key: &str, settings: &mut Settings)
     changed
 }
 
-fn save_settings(settings: &Settings) -> Option<String> {
-    settings
-        .save()
-        .err()
-        .map(|error| format!("Could not save settings: {error}"))
+fn save_settings(settings: &Settings, toasts: &mut Toasts) {
+    if let Err(error) = settings.save() {
+        toasts.push(format!("Could not save settings: {error}"));
+    }
 }
 
 fn paint_cover(ui: &egui::Ui, texture: &egui::TextureHandle, rect: egui::Rect) {
@@ -400,18 +417,25 @@ fn paint_cover(ui: &egui::Ui, texture: &egui::TextureHandle, rect: egui::Rect) {
     );
 }
 
+/// Inputs shared by every row of the album track list.
+struct TrackRows<'a> {
+    library: &'a Library,
+    album: &'a Album,
+    playback: &'a mut Playback,
+    selected_track: &'a mut Option<usize>,
+    toasts: &'a mut Toasts,
+}
+
+const TRACK_ROW_HEIGHT: f32 = 50.0;
+
 fn show_tracks(
     ctx: &egui::Context,
     ui: &mut egui::Ui,
-    library: &Library,
-    playback: &mut Playback,
-    selected_track: &mut Option<usize>,
-    album_index: usize,
+    mut rows: TrackRows<'_>,
     lyrics_open: bool,
+    scroll_to_selection: bool,
 ) -> f32 {
-    let Some(album) = library.albums.get(album_index) else {
-        return 0.0;
-    };
+    let album = rows.album;
     let available_height = ui.available_height();
     let max_lyrics_content_height =
         crate::features::lyrics::panel::maximum_content_height(available_height);
@@ -421,7 +445,7 @@ fn show_tracks(
     let track_list_height = if lyrics_open {
         max_track_list_height
     } else {
-        ((album.tracks.len() as f32 * 50.0) + 30.0)
+        ((album.tracks.len() as f32 * TRACK_ROW_HEIGHT) + 30.0)
             .min(max_track_list_height)
             .max(100.0)
     };
@@ -439,141 +463,145 @@ fn show_tracks(
         egui::vec2(ui.available_width(), track_list_height),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
-            egui::ScrollArea::vertical()
+            let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("album-popout-tracks")
                 .drag_to_scroll(false)
                 .enable_scrolling(
                     pointer_inside && !crate::features::lyrics::panel::is_resizing(ctx),
                 )
-                .max_height(track_list_height)
-                .show(ui, |ui| {
-                    ui.add_space(12.0);
-                    for (position, &track_index) in album.tracks.iter().enumerate() {
-                        draw_track_row(
-                            ui,
-                            library,
-                            playback,
-                            selected_track,
-                            album_index,
-                            track_index,
-                            position,
-                        );
-                    }
-                    ui.add_space(18.0);
-                });
+                .max_height(track_list_height);
+            if let Some(position) = rows
+                .selected_track
+                .filter(|_| scroll_to_selection)
+                .and_then(|track| album.tracks.iter().position(|&index| index == track))
+            {
+                let offset = 12.0 + position as f32 * TRACK_ROW_HEIGHT
+                    - (track_list_height - TRACK_ROW_HEIGHT) * 0.5;
+                scroll = scroll.vertical_scroll_offset(offset.max(0.0));
+            }
+            scroll.show(ui, |ui| {
+                ui.add_space(12.0);
+                for (position, &track_index) in album.tracks.iter().enumerate() {
+                    rows.show(ui, position, track_index);
+                }
+                ui.add_space(18.0);
+            });
         },
     );
     max_lyrics_content_height
 }
 
-fn draw_track_row(
-    ui: &mut egui::Ui,
-    library: &Library,
-    playback: &mut Playback,
-    selected_track: &mut Option<usize>,
-    album_index: usize,
-    track_index: usize,
-    position: usize,
-) {
-    let Some(track) = library.tracks.get(track_index) else {
-        return;
-    };
-    let colors = theme::colors(ui.ctx());
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), egui::Sense::click());
-    if response.secondary_clicked() {
-        *selected_track = Some(track_index);
-    }
-    response.context_menu(|ui| {
-        if ui.button("Add to queue").clicked() {
-            playback.enqueue(track_index);
-            ui.close_menu();
-        }
-    });
-    let context_menu_open = response.context_menu_opened();
-    let highlight = egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(12.0, 0.0));
-    let playing = playback.current == Some(track_index);
-    let selected = *selected_track == Some(track_index);
-    let highlighted = selected || context_menu_open;
-    if highlighted {
-        ui.painter().rect_filled(highlight, 3.0, colors.selected);
-    }
-
-    let leading =
-        egui::Rect::from_min_size(rect.min + egui::vec2(18.0, 14.0), egui::vec2(20.0, 20.0));
-    let (glyph, color) = if playing {
-        (
-            if playback.is_playing() {
-                egui_phosphor::regular::PAUSE
-            } else {
-                egui_phosphor::regular::PLAY
-            },
-            colors.accent,
-        )
-    } else {
-        ("", colors.subtle)
-    };
-    ui.painter().text(
-        leading.center(),
-        egui::Align2::CENTER_CENTER,
-        if playing {
-            glyph.to_owned()
-        } else {
-            format!("{:02}", position + 1)
-        },
-        if playing {
-            icon_font(18.0)
-        } else {
-            egui::FontId::proportional(11.0)
-        },
-        color,
-    );
-
-    let text_rect = egui::Rect::from_min_max(
-        rect.min + egui::vec2(50.0, 7.0),
-        rect.max - egui::vec2(58.0, 5.0),
-    );
-    let mut text_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(text_rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    text_ui.add(
-        egui::Label::new(
-            egui::RichText::new(&track.title)
-                .size(12.0)
-                .color(if highlighted {
-                    colors.accent
-                } else {
-                    colors.text
-                }),
-        )
-        .truncate(),
-    );
-    text_ui.add(
-        egui::Label::new(
-            egui::RichText::new(&track.artist)
-                .size(10.0)
-                .color(colors.muted),
-        )
-        .truncate(),
-    );
-    if let Some(duration) = track.duration_ms {
-        ui.painter().text(
-            highlight.right_center() - egui::vec2(10.0, 0.0),
-            egui::Align2::RIGHT_CENTER,
-            format_duration(duration),
-            egui::FontId::proportional(10.0),
-            colors.subtle,
+impl TrackRows<'_> {
+    /// Draw one track; click selects it and double-click plays the album from it.
+    fn show(&mut self, ui: &mut egui::Ui, position: usize, track_index: usize) {
+        let TrackRows {
+            library,
+            album,
+            playback,
+            selected_track,
+            toasts,
+        } = self;
+        let Some(track) = library.tracks.get(track_index) else {
+            return;
+        };
+        let colors = theme::colors(ui.ctx());
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), TRACK_ROW_HEIGHT),
+            egui::Sense::click(),
         );
-    }
-    if response.clicked() {
-        if selected {
-            if let Some(album) = library.albums.get(album_index) {
-                playback.play_track_in_album(album, &library.tracks, track_index);
-            }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                true,
+                **selected_track == Some(track_index),
+                &track.title,
+            )
+        });
+        if response.clicked() || response.secondary_clicked() {
+            **selected_track = Some(track_index);
+        }
+        if response.double_clicked() {
+            playback.play_in_context(&album.tracks, &library.tracks, track_index);
+        }
+        response.context_menu(|ui| {
+            track_menu::show(ui, playback, library, track_index, false, toasts);
+        });
+        let context_menu_open = response.context_menu_opened();
+        let highlight = egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(12.0, 0.0));
+        let playing = playback.current == Some(track_index);
+        let selected = **selected_track == Some(track_index);
+        let highlighted = selected || context_menu_open;
+        if highlighted {
+            ui.painter().rect_filled(highlight, 3.0, colors.selected);
+        }
+
+        let leading =
+            egui::Rect::from_min_size(rect.min + egui::vec2(18.0, 14.0), egui::vec2(20.0, 20.0));
+        let (glyph, color) = if playing {
+            (
+                if playback.is_playing() {
+                    egui_phosphor::regular::PAUSE
+                } else {
+                    egui_phosphor::regular::PLAY
+                },
+                colors.accent,
+            )
         } else {
-            *selected_track = Some(track_index);
+            ("", colors.subtle)
+        };
+        ui.painter().text(
+            leading.center(),
+            egui::Align2::CENTER_CENTER,
+            if playing {
+                glyph.to_owned()
+            } else {
+                format!("{:02}", position + 1)
+            },
+            if playing {
+                icon_font(18.0)
+            } else {
+                egui::FontId::proportional(11.0)
+            },
+            color,
+        );
+
+        let text_rect = egui::Rect::from_min_max(
+            rect.min + egui::vec2(50.0, 7.0),
+            rect.max - egui::vec2(58.0, 5.0),
+        );
+        let mut text_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(text_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        text_ui.add(
+            egui::Label::new(
+                egui::RichText::new(&track.title)
+                    .size(12.0)
+                    .color(if highlighted {
+                        colors.accent
+                    } else {
+                        colors.text
+                    }),
+            )
+            .truncate(),
+        );
+        text_ui.add(
+            egui::Label::new(
+                egui::RichText::new(&track.artist)
+                    .size(10.0)
+                    .color(colors.muted),
+            )
+            .truncate(),
+        );
+        if let Some(duration) = track.duration_ms {
+            ui.painter().text(
+                highlight.right_center() - egui::vec2(10.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                format_duration(duration),
+                egui::FontId::proportional(10.0),
+                colors.subtle,
+            );
         }
     }
 }

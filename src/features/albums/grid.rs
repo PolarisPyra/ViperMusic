@@ -1,6 +1,6 @@
 use super::screen::{
-    album_format_label, open_album, paint_cover_with_opacity, paint_format_badge, play_album,
-    show_album_context_menu, show_shimmer_rect, AlbumScreen,
+    album_format_label, describe_album, open_album, paint_cover_with_opacity, paint_format_badge,
+    play_album, show_album_context_menu, show_shimmer_rect, AlbumScreen,
 };
 use crate::shared::ui::theme;
 use eframe::egui;
@@ -12,15 +12,27 @@ pub(super) fn show_album_rows(
     albums: &[usize],
     viewport: egui::Rect,
     width: f32,
+    scroll_to: Option<usize>,
 ) {
     const TOP_PADDING: f32 = 16.0;
     const ROW_GAP: f32 = 10.0;
     let (columns, card_width, art_size, gap, left) = grid_metrics(width);
+    screen.library.view.grid_columns = columns;
     let row_height = art_size + 81.0;
     let row_step = row_height + ROW_GAP;
     let rows = albums.len().div_ceil(columns);
     let content = ui.max_rect();
     ui.set_height(TOP_PADDING + rows as f32 * row_step);
+    if let Some(position) = scroll_to {
+        let top = content.top() + TOP_PADDING + (position / columns) as f32 * row_step;
+        ui.scroll_to_rect(
+            egui::Rect::from_min_size(
+                egui::pos2(content.left(), top),
+                egui::vec2(width, row_height),
+            ),
+            Some(egui::Align::Center),
+        );
+    }
     let first = (((viewport.min.y - TOP_PADDING).max(0.0) / row_step).floor() as usize).min(rows);
     let last =
         ((((viewport.max.y - TOP_PADDING).max(0.0) / row_step).ceil() as usize) + 1).min(rows);
@@ -134,6 +146,7 @@ fn show_album_card(
         },
     );
     let response = response.response.interact(egui::Sense::click());
+    describe_album(&response, album, selected);
     if response.double_clicked() {
         play_album(screen, index);
     } else if response.clicked() {

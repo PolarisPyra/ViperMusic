@@ -1,7 +1,7 @@
 use crate::{
     features::library::state::LibraryViewState,
     platform::persistence::settings::{AlbumLayout, AlbumSort, Settings},
-    shared::ui::theme,
+    shared::ui::{controls::search_field, theme, toasts::Toasts},
 };
 use eframe::egui;
 
@@ -9,7 +9,7 @@ pub(crate) fn show(
     ctx: &egui::Context,
     settings: &mut Settings,
     library_view: &mut LibraryViewState,
-    error: &mut Option<String>,
+    toasts: &mut Toasts,
 ) {
     let colors = theme::colors(ctx);
     egui::TopBottomPanel::top("view-toolbar")
@@ -29,6 +29,13 @@ pub(crate) fn show(
                 let popup_id = ui.make_persistent_id("album-sort-popup");
                 let (sort_rect, sort_response) =
                     ui.allocate_exact_size(egui::vec2(152.0, 32.0), egui::Sense::click());
+                sort_response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::ComboBox,
+                        true,
+                        format!("Sort albums by {}", active.label()),
+                    )
+                });
                 paint_sort_dropdown(ui, sort_rect, &sort_response, active.label(), popup_id);
                 if sort_response.clicked() {
                     ui.memory_mut(|memory| memory.toggle_popup(popup_id));
@@ -66,7 +73,7 @@ pub(crate) fn show(
                                 library_view.random_sort_seed.wrapping_add(1);
                         }
                         library_view.album_sort_dirty = true;
-                        save_settings(settings, error);
+                        save_settings(settings, toasts);
                     }
                 }
 
@@ -87,7 +94,7 @@ pub(crate) fn show(
                 if sort_direction {
                     settings.sort_ascending = !settings.sort_ascending;
                     library_view.album_sort_dirty = true;
-                    save_settings(settings, error);
+                    save_settings(settings, toasts);
                 }
 
                 let mut layout_changed = None;
@@ -108,76 +115,19 @@ pub(crate) fn show(
                             layout_changed = Some(layout);
                         }
                     }
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(220.0, 32.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            egui::Frame::new()
-                                .fill(colors.panel)
-                                .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                                .corner_radius(3.0)
-                                .inner_margin(egui::Margin::symmetric(10, 0))
-                                .show(ui, |ui| {
-                                    // Frame stroke adds one pixel on each side;
-                                    // keep the inner height at 30 px for a 32 px control.
-                                    ui.set_min_height(30.0);
-                                    ui.with_layout(
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                egui::vec2(18.0, 20.0),
-                                                egui::Sense::hover(),
-                                            );
-                                            ui.painter().text(
-                                                rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                egui_phosphor::regular::MAGNIFYING_GLASS,
-                                                theme::icon_font(18.0),
-                                                colors.text,
-                                            );
-                                            let search = ui.add(
-                                                egui::TextEdit::singleline(
-                                                    &mut library_view.search,
-                                                )
-                                                .id(egui::Id::new("library-search-field"))
-                                                .text_color(colors.text)
-                                                .hint_text(
-                                                    egui::RichText::new("Search")
-                                                        .color(colors.text),
-                                                )
-                                                .desired_width(122.0)
-                                                .frame(false),
-                                            );
-                                            search.on_hover_text("Search (F)");
-                                            ui.add_space(4.0);
-                                            egui::Frame::new()
-                                                .fill(colors.canvas)
-                                                .corner_radius(4.0)
-                                                .inner_margin(egui::Margin::symmetric(5, 2))
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new("F")
-                                                            .size(10.0)
-                                                            .color(colors.muted),
-                                                    );
-                                                });
-                                        },
-                                    );
-                                });
-                        },
-                    );
+                    search_field(ui, &mut library_view.search);
                 });
                 if let Some(layout) = layout_changed {
                     settings.album_layout = layout;
-                    save_settings(settings, error);
+                    save_settings(settings, toasts);
                 }
             });
         });
 }
 
-fn save_settings(settings: &Settings, error: &mut Option<String>) {
+fn save_settings(settings: &Settings, toasts: &mut Toasts) {
     if let Err(save_error) = settings.save() {
-        *error = Some(format!("Could not save settings: {save_error}"));
+        toasts.push(format!("Could not save settings: {save_error}"));
     }
 }
 
@@ -220,6 +170,9 @@ fn paint_sort_dropdown(
 
 fn view_button(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 32.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
+    });
     paint_icon_button(ui, rect, &response, icon, selected);
     response.on_hover_text(label).clicked()
 }

@@ -1,8 +1,6 @@
 use super::application::ViperApp;
 use crate::{
-    features::playback::RepeatMode,
-    shared::action::AppAction,
-    workbench::{Page, WorkbenchContext},
+    features::playback::RepeatMode, shared::action::AppAction, workbench::WorkbenchContext,
 };
 use eframe::egui;
 use std::{sync::Arc, time::Duration};
@@ -14,52 +12,6 @@ impl Default for ViperApp {
 }
 
 impl ViperApp {
-    /// Handle global keyboard shortcuts before any panel consumes input.
-    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let consume = |key| ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, key));
-        let workbench = &mut self.workbench;
-        let popup_open = ctx.memory(|memory| memory.any_popup_open());
-        if !workbench.show_preferences
-            && (popup_open
-                || workbench.show_queue
-                || workbench.show_shortcuts
-                || workbench.show_album_details)
-            && consume(egui::Key::Escape)
-        {
-            if popup_open {
-                ctx.memory_mut(|memory| memory.close_popup());
-            } else if workbench.show_shortcuts {
-                workbench.show_shortcuts = false;
-            } else if workbench.show_queue {
-                workbench.show_queue = false;
-            } else {
-                workbench.show_album_details = false;
-            }
-        }
-        if workbench.show_preferences || ctx.wants_keyboard_input() {
-            return;
-        }
-        if !workbench.show_shortcuts {
-            if consume(egui::Key::F) {
-                workbench.page = Page::Albums;
-                workbench.show_album_details = false;
-                ctx.memory_mut(|memory| {
-                    memory.request_focus(egui::Id::new("library-search-field"))
-                });
-            }
-            if consume(egui::Key::Q) {
-                workbench.show_queue = !workbench.show_queue;
-            }
-            if consume(egui::Key::F5) {
-                self.playback()
-                    .play_random_track(&self.library.model.tracks);
-            }
-        }
-        if consume(egui::Key::Space) {
-            self.playback().play_pause(&self.library);
-        }
-    }
-
     /// Advance playback, schedule gapless transitions, and request timely repaints.
     fn update_playback(&mut self, ctx: &egui::Context) {
         let playback_handle = Arc::clone(&self.playback);
@@ -83,12 +35,16 @@ impl ViperApp {
                 });
             }
         }
+        if let Some(error) = playback.error.take() {
+            self.toasts.push(error);
+        }
         self.observe_playback_track(&playback);
         if self.lastfm_service.poll(&mut self.lastfm_settings) {
             if let Err(error) =
                 crate::platform::persistence::settings::save_lastfm_settings(&self.lastfm_settings)
             {
-                self.error = Some(format!("Could not save Last.fm session: {error}"));
+                self.toasts
+                    .push(format!("Could not save Last.fm session: {error}"));
             }
         }
         let current = playback
@@ -180,7 +136,7 @@ impl eframe::App for ViperApp {
                 lastfm_service: &mut self.lastfm_service,
                 lastfm_settings: &mut self.lastfm_settings,
                 artwork_cache: &mut self.artwork_cache,
-                error: &mut self.error,
+                toasts: &mut self.toasts,
             },
         );
         drop(playback);
@@ -188,6 +144,14 @@ impl eframe::App for ViperApp {
         for action in actions {
             self.handle_action(action);
         }
+        let zoom = ctx.zoom_factor();
+        if (zoom - self.settings.ui_zoom).abs() > f32::EPSILON
+            && !ctx.input(|input| input.pointer.any_down())
+        {
+            self.settings.ui_zoom = zoom;
+            self.save_settings();
+        }
+        self.toasts.show(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

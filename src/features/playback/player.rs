@@ -225,7 +225,7 @@ impl Playback {
                 .selected_track
                 .filter(|index| album.tracks.contains(index))
             {
-                Some(track_index) => self.play_track_in_album(album, tracks, track_index),
+                Some(track_index) => self.play_in_context(&album.tracks, tracks, track_index),
                 None => self.play_album(album, tracks),
             }
         } else if self.has_next() {
@@ -290,33 +290,29 @@ impl Playback {
         self.start_track(tracks, first);
     }
 
-    /// Play a track and queue the following tracks from its album.
+    /// Play a track and queue the tracks that follow it in a listening context.
     ///
     /// # Arguments
-    /// * `album` - Album containing the selected track.
+    /// * `context` - Ordered track indexes, such as an album or a filtered song list.
     /// * `tracks` - Current library tracks.
-    /// * `track_index` - Index of the selected track in `tracks`.
-    pub fn play_track_in_album(&mut self, album: &Album, tracks: &[Track], track_index: usize) {
-        let Some(position) = album.tracks.iter().position(|&index| index == track_index) else {
+    /// * `track_index` - Index of the selected track in `tracks`; must appear in `context`.
+    pub fn play_in_context(&mut self, context: &[usize], tracks: &[Track], track_index: usize) {
+        let Some(position) = context.iter().position(|&index| index == track_index) else {
             return;
         };
         self.prepare_selection();
-        self.error = None;
-        self.context_tracks = album.tracks.clone();
+        self.context_tracks = context.to_vec();
         if self.shuffle_enabled {
             self.auto_queue.extend(
-                album
-                    .tracks
+                context
                     .iter()
                     .copied()
                     .filter(|&index| index != track_index),
             );
+            self.shuffle_queue();
         } else {
             self.auto_queue
-                .extend(album.tracks[position + 1..].iter().copied());
-        }
-        if self.shuffle_enabled {
-            self.shuffle_queue();
+                .extend(context[position + 1..].iter().copied());
         }
         self.start_track(tracks, track_index);
     }
@@ -617,9 +613,20 @@ impl Playback {
         }
     }
 
-    /// Add a track to the end of the playback queue.
-    pub(crate) fn enqueue(&mut self, track_index: usize) {
-        self.manual_queue.push_back(track_index);
+    /// Add tracks to the end of the playback queue.
+    pub(crate) fn enqueue(&mut self, track_indices: &[usize]) {
+        self.manual_queue.extend(track_indices);
+        self.clear_scheduled_pending();
+    }
+
+    /// Insert tracks at the front of the queue so they play after the current track.
+    ///
+    /// # Arguments
+    /// * `track_indices` - Tracks to play next, in playback order.
+    pub(crate) fn play_next(&mut self, track_indices: &[usize]) {
+        for &track_index in track_indices.iter().rev() {
+            self.manual_queue.push_front(track_index);
+        }
         self.clear_scheduled_pending();
     }
 

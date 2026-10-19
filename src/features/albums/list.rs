@@ -1,8 +1,11 @@
 use super::screen::{
-    album_format_label, open_album, paint_cover_with_opacity, paint_format_badge, play_album,
-    show_album_context_menu, show_shimmer_rect, AlbumScreen,
+    album_format_label, describe_album, open_album, paint_cover_with_opacity, paint_format_badge,
+    play_album, show_album_context_menu, show_shimmer_rect, AlbumScreen,
 };
-use crate::{platform::persistence::settings::Settings, shared::ui::theme};
+use crate::{
+    platform::persistence::settings::Settings,
+    shared::ui::{theme, toasts::Toasts},
+};
 use eframe::egui;
 
 const ARTWORK_COLUMN_WIDTH: f32 = 82.0;
@@ -13,7 +16,7 @@ pub(super) fn show_header(
     ui: &mut egui::Ui,
     width: f32,
     settings: &mut Settings,
-    error: &mut Option<String>,
+    toasts: &mut Toasts,
 ) {
     let colors = theme::colors(ui.ctx());
     const HEADER_HEIGHT: f32 = 32.0;
@@ -81,7 +84,7 @@ pub(super) fn show_header(
     }
     if should_save {
         if let Err(save_error) = settings.save() {
-            *error = Some(format!(
+            toasts.push(format!(
                 "Could not save album list column widths: {save_error}"
             ));
         }
@@ -113,6 +116,7 @@ pub(super) fn show_album_list(
     albums: &[usize],
     viewport: egui::Rect,
     width: f32,
+    scroll_to: Option<usize>,
 ) {
     let colors = theme::colors(ui.ctx());
     const ROW_HEIGHT: f32 = 72.0;
@@ -122,6 +126,15 @@ pub(super) fn show_album_list(
     let content = ui.max_rect();
     let rows_top = content.top();
     ui.set_height(rows as f32 * row_step);
+    if let Some(position) = scroll_to {
+        ui.scroll_to_rect(
+            egui::Rect::from_min_size(
+                egui::pos2(content.left(), rows_top + position as f32 * row_step),
+                egui::vec2(width, ROW_HEIGHT),
+            ),
+            Some(egui::Align::Center),
+        );
+    }
     let first = ((viewport.min.y.max(0.0) / row_step).floor() as usize).min(rows);
     let last = ((viewport.max.y.max(0.0) / row_step).ceil() as usize + 1).min(rows);
 
@@ -136,6 +149,9 @@ pub(super) fn show_album_list(
             ui.id().with(("album-list-row", album_index)),
             egui::Sense::click(),
         );
+        if let Some(album) = screen.library.model.albums.get(album_index) {
+            describe_album(&response, album, selected);
+        }
         if selected || response.hovered() {
             ui.painter().rect_filled(
                 rect.shrink2(egui::vec2(0.0, 2.0)),

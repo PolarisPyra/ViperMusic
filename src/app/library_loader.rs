@@ -7,14 +7,13 @@ impl ViperApp {
         self.playback().stop();
         self.last_observed_track = None;
         self.artwork_cache.clear();
-        self.error = None;
 
         if let Err(error) = self.library.start_scan(
             root,
             #[cfg(target_os = "linux")]
             self.smb_auth.clone(),
         ) {
-            self.error = Some(error);
+            self.toasts.push(error);
         }
         #[cfg(target_os = "linux")]
         self.sync_mpris();
@@ -28,12 +27,12 @@ impl ViperApp {
         self.sync_mpris();
         match completion {
             ScanCompletion::Loaded { warning } => {
-                if warning.is_some() {
-                    self.error = warning;
+                if let Some(warning) = warning {
+                    self.toasts.push(warning);
                 }
                 self.record_new_albums();
             }
-            ScanCompletion::Failed(error) => self.error = Some(error),
+            ScanCompletion::Failed(error) => self.toasts.push(error),
         }
         true
     }

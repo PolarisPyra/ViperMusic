@@ -96,7 +96,7 @@ pub(crate) fn show(
                             lastfm_settings,
                             &mut action,
                         ),
-                        Category::About => {}
+                        Category::About => show_about(ui),
                     }
                 });
         });
@@ -244,7 +244,11 @@ fn show_general(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<
     let mut new_startup_view = startup_view;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        for (page, label) in [(StartupView::Home, "Home"), (StartupView::Albums, "Albums")] {
+        for (page, label) in [
+            (StartupView::Home, "Home"),
+            (StartupView::Albums, "Albums"),
+            (StartupView::Songs, "Songs"),
+        ] {
             if choice_row(ui, label, new_startup_view == page, "Current startup page").clicked() {
                 new_startup_view = page;
             }
@@ -381,6 +385,24 @@ fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<App
         )
         .size(12.0)
         .color(colors.muted),
+    );
+    ui.add_space(20.0);
+    section_title(ui, "Interface scale");
+    let mut zoom = ui.ctx().zoom_factor();
+    if ui
+        .add(
+            egui::Slider::new(&mut zoom, 0.75..=2.0)
+                .step_by(0.05)
+                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+        )
+        .changed()
+    {
+        ui.ctx().set_zoom_factor(zoom);
+    }
+    ui.label(
+        egui::RichText::new("You can also press Ctrl + and Ctrl − to zoom, and Ctrl 0 to reset.")
+            .size(12.0)
+            .color(colors.muted),
     );
     ui.add_space(20.0);
     section_title(ui, "Albums");
@@ -591,6 +613,70 @@ fn show_services(
                 *action = Some(AppAction::SaveDiscordApplicationId);
             }
         },
+    );
+}
+
+const REPOSITORY_URL: &str = "https://github.com/PolarisPyra/ViperMusic";
+
+fn show_about(ui: &mut egui::Ui) {
+    let colors = theme::colors(ui.ctx());
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(egui_phosphor::regular::DISC)
+                .font(theme::icon_font(40.0))
+                .color(colors.accent),
+        );
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Viper Music")
+                    .size(20.0)
+                    .strong()
+                    .color(colors.text),
+            );
+            ui.label(
+                egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                    .size(12.0)
+                    .color(colors.muted),
+            );
+        });
+    });
+    ui.add_space(12.0);
+    ui.label("A fast, album-centric music player for local folders and SMB shares.");
+    ui.add_space(20.0);
+    section_title(ui, "Links");
+    ui.hyperlink_to("Source code", REPOSITORY_URL);
+    ui.hyperlink_to("Report a problem", format!("{REPOSITORY_URL}/issues"));
+    ui.add_space(20.0);
+    section_title(ui, "Data");
+    ui.label("Preferences and library state are stored in:");
+    match Settings::file_path() {
+        Ok(path) => {
+            let path = path.display().to_string();
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&path).monospace().size(12.0)).truncate(),
+                );
+                if ui
+                    .small_button(egui_phosphor::regular::COPY)
+                    .on_hover_text("Copy path")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(path);
+                }
+            });
+        }
+        Err(error) => {
+            ui.label(egui::RichText::new(error.to_string()).color(colors.danger));
+        }
+    }
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(
+            "Passwords, API keys, and session tokens are kept in the operating system's credential store.",
+        )
+        .size(12.0)
+        .color(colors.muted),
     );
 }
 

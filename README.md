@@ -22,10 +22,14 @@ The app opens to the Home view. To select or change the music folder, choose **L
 
 ## Features
 
-- Browse the Home and Albums views, search the album library, and open album track lists.
-- Play an album or start from a selected track; use previous, play/pause, next, stop, seek, and volume controls.
-- Navigate with the File, Library, Playback, and View menu dropdowns.
-- Choose **Set Home/Albums as startup view** from the corresponding sidebar item's context menu.
+- Browse the Home, Albums, and Songs views. Search matches album titles and artists, and the Songs view also matches track titles, so tracks without album tags stay reachable.
+- Double-click an album or song to play it; single-click selects. Right-click for **Play next**, **Add to queue**, **Go to album**, and **Open containing folder**.
+- Click the now-playing artwork or title to jump to its album. Drag on the seek bar to preview a position; playback seeks when you release.
+- Edit **Up Next** in a side panel (`Q`) that stays open while you browse; drag songs to reorder them.
+- Home shelves show up to 20 albums; **See all** opens the album browser with the matching sort.
+- Keyboard: arrows move the selection, `Enter` opens or plays it, `Space` plays or pauses, `Ctrl ←/→` seeks, `Ctrl ↑/↓` changes volume, and `Ctrl +/−/0` zooms. See **Help → Keyboard Shortcuts** for the full list.
+- Navigate with the File, Library, Playback, View, and Help menus, and choose a startup page from a sidebar item's context menu.
+- Errors appear as dismissible notifications in the bottom-right corner.
 - Album metadata falls back to filenames and folders when tags are missing. Albums are grouped by album artist when available, while track artists remain visible.
 - Disc folders such as `CD1`, `Disc 2`, and `Disk 3` use the parent folder as the album name and artwork location.
 - Load cover art from neighboring image files or embedded audio artwork; artwork is reduced to a 320 px thumbnail and cached.
@@ -76,9 +80,8 @@ SMB1-only servers require insecure legacy protocol support and are not enabled b
 
 ## Project layout
 
-- `src/main.rs` starts the application; `src/app/initialization.rs` configures fonts and the native window, then creates `ViperApp`.
-- `src/app/` coordinates application state and initial library loading in `library_loader.rs` and filesystem updates in `library_watcher.rs`.
-- `src/views/home.rs` and `src/views/album_grid.rs` render the Home and Albums pages; album details and track rows live under `src/components/`.
-- `src/library/` owns models, `sorting`, `scanner`, `modifications`, audio-file helpers, tag reading, metadata caching, and folder watching.
-- `src/artwork/` scans for and prepares cover art in `scanner.rs`, and manages decoded artwork textures in `cache.rs`.
-- `src/playback/player.rs` handles Rodio playback with Symphonia decoding; `src/storage/` stores settings and metadata cache records in SQLite.
+- `src/app/` creates the window (`bootstrap.rs`), owns application state (`application.rs`), runs each frame (`runtime.rs`), and handles keyboard shortcuts, scanning, and folder watching.
+- `src/workbench/` lays out the shell: menu bar, sidebar, player bar, queue panel, and the active page.
+- `src/features/` holds the Home, Albums, Songs, lyrics, and preferences views, plus the library model and scanner (`library/`) and Rodio playback with MPRIS controls (`playback/`).
+- `src/platform/` stores settings in SQLite and credentials in the OS keyring (`persistence/`), and talks to Discord and Last.fm (`presence/`).
+- `src/shared/` provides themes, reusable controls, notifications, and artwork loading and caching.

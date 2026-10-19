@@ -4,12 +4,18 @@ use crate::{
         library::{state::LibraryFeature, Album, Library},
         playback::Playback,
     },
-    platform::persistence::settings::{AlbumLayout, Settings},
-    shared::{artwork::ArtworkCache, ui::theme},
+    platform::{
+        desktop,
+        persistence::settings::{AlbumLayout, Settings},
+    },
+    shared::{
+        artwork::ArtworkCache,
+        ui::{controls::menu_entry, theme, toasts::Toasts},
+    },
     workbench::WorkbenchState,
 };
 use eframe::egui;
-use std::{borrow::Cow, path::Path, process::Command};
+use std::borrow::Cow;
 
 pub(crate) struct AlbumScreen<'a> {
     pub(crate) workbench: &'a mut WorkbenchState,
@@ -17,7 +23,24 @@ pub(crate) struct AlbumScreen<'a> {
     pub(crate) playback: &'a mut Playback,
     pub(crate) settings: &'a mut Settings,
     pub(crate) artwork_cache: &'a mut ArtworkCache,
-    pub(crate) error: &'a mut Option<String>,
+    pub(crate) toasts: &'a mut Toasts,
+}
+
+/// Describe an album card or row to assistive technology.
+pub(super) fn describe_album(response: &egui::Response, album: &Album, selected: bool) {
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            selected,
+            format!(
+                "{} by {}, {} tracks",
+                album.title,
+                album.artist,
+                album.tracks.len()
+            ),
+        )
+    });
 }
 
 /// Return the shared file format of an album's tracks, `MIXED`, or `OTHER`.
@@ -78,23 +101,16 @@ impl AlbumScreen<'_> {
 
 pub(crate) fn show(ctx: &egui::Context, mut screen: AlbumScreen<'_>) {
     let colors = theme::colors(ctx);
-    toolbar::show(ctx, screen.settings, &mut screen.library.view, screen.error);
-    let layout = screen.settings.album_layout;
-    let albums = screen.library.filtered_album_indices(screen.settings);
-    let page = crate::shared::ui::pagination::show(
+    toolbar::show(
         ctx,
-        albums.len(),
-        crate::shared::ui::pagination::ALBUMS_PER_PAGE,
-        (
-            matches!(layout, AlbumLayout::Grid),
-            screen.library.view.search.as_str(),
-            screen.settings.album_sort.label(),
-            screen.settings.sort_ascending,
-        ),
+        screen.settings,
+        &mut screen.library.view,
+        screen.toasts,
     );
+    let albums = screen.library.filtered_album_indices(screen.settings);
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(colors.canvas).inner_margin(0))
-        .show(ctx, |ui| show_grid(ctx, ui, &mut screen, &albums, page));
+        .show(ctx, |ui| show_grid(ctx, ui, &mut screen, &albums));
 }
 
 fn show_grid(
@@ -102,7 +118,6 @@ fn show_grid(
     ui: &mut egui::Ui,
     screen: &mut AlbumScreen<'_>,
     albums: &[usize],
-    page: std::ops::Range<usize>,
 ) {
     let background_response = ui.interact(
         ui.max_rect(),
@@ -114,14 +129,14 @@ fn show_grid(
     let layout = screen.settings.album_layout;
     let width = ui.available_width();
     if layout == AlbumLayout::List {
-        list::show_header(ui, width, screen.settings, screen.error);
+        list::show_header(ui, width, screen.settings, screen.toasts);
     }
 
     let bounds = ui.max_rect();
     egui::ScrollArea::vertical()
         .id_salt(match layout {
-            AlbumLayout::Grid => ("album-grid-scroll", page.start),
-            AlbumLayout::List => ("album-list-scroll", page.start),
+            AlbumLayout::Grid => "album-grid-scroll",
+            AlbumLayout::List => "album-list-scroll",
         })
         .auto_shrink([false, false])
         .drag_to_scroll(false)
@@ -132,12 +147,20 @@ fn show_grid(
                 show_empty(ctx, ui, screen, width);
                 return;
             }
+            // Keyboard navigation asks for the highlighted album to be scrolled into view.
+            let scroll_to = std::mem::take(&mut screen.library.view.scroll_to_selection)
+                .then(|| {
+                    let highlighted = screen.library.view.highlighted_album?;
+                    albums.iter().position(|&index| index == highlighted)
+                })
+                .flatten();
             match layout {
                 AlbumLayout::Grid => {
-                    grid::show_album_rows(ctx, ui, screen, &albums[page.clone()], viewport, width)
+                    grid::show_album_rows(ctx, ui, screen, albums, viewport, width, scroll_to)
                 }
                 AlbumLayout::List => {
-                    list::show_album_list(ctx, ui, screen, &albums[page.clone()], viewport, width)
+                    screen.library.view.grid_columns = 1;
+                    list::show_album_list(ctx, ui, screen, albums, viewport, width, scroll_to)
                 }
             }
         });
@@ -172,9 +195,7 @@ fn show_empty(ctx: &egui::Context, ui: &mut egui::Ui, screen: &AlbumScreen<'_>, 
 }
 
 pub(super) fn open_album(ctx: &egui::Context, screen: &mut AlbumScreen<'_>, index: usize) {
-    screen.library.view.selected_track = None;
-    screen.library.view.selected_album = Some(index);
-    screen.library.view.highlighted_album = Some(index);
+    screen.library.view.select_album(index);
     screen.workbench.show_album_details = true;
     ctx.request_repaint();
 }
@@ -194,67 +215,37 @@ pub(super) fn show_album_context_menu(
 ) {
     response.context_menu(|ui| {
         crate::workbench::style_menu_popup(ui);
-        let colors = theme::colors(ui.ctx());
-        if ui
-            .selectable_label(false, egui::RichText::new("Play album").color(colors.text))
-            .clicked()
-        {
-            play_album(screen, index);
-            ui.close_menu();
+        let Some(album) = screen.library.model.albums.get(index) else {
+            return;
+        };
+        if menu_entry(ui, true, "Play album") {
+            screen
+                .playback
+                .play_album(album, &screen.library.model.tracks);
         }
-        if ui
-            .selectable_label(
-                false,
-                egui::RichText::new("Add album to queue").color(colors.text),
-            )
-            .clicked()
-        {
-            if let Some(album) = screen.library.model.albums.get(index) {
-                for &track_index in &album.tracks {
-                    screen.playback.enqueue(track_index);
+        if menu_entry(ui, true, "Play next") {
+            screen.playback.play_next(&album.tracks);
+        }
+        if menu_entry(ui, true, "Add album to queue") {
+            screen.playback.enqueue(&album.tracks);
+        }
+        let folder = album
+            .tracks
+            .first()
+            .and_then(|&track| screen.library.model.tracks.get(track))
+            .and_then(|track| track.path.parent())
+            .filter(|folder| !crate::features::library::is_smb_path(folder));
+        if menu_entry(ui, folder.is_some(), "Open in file browser") {
+            if let Some(folder) = folder {
+                if let Err(error) = desktop::open_folder(folder) {
+                    screen.toasts.push(format!(
+                        "Could not open album folder {}: {error}",
+                        folder.display()
+                    ));
                 }
             }
-            ui.close_menu();
-        }
-        if ui
-            .selectable_label(
-                false,
-                egui::RichText::new("Open in file browser").color(colors.text),
-            )
-            .clicked()
-        {
-            let directory = screen
-                .library
-                .model
-                .albums
-                .get(index)
-                .and_then(|album| album.tracks.first())
-                .and_then(|track_index| screen.library.model.tracks.get(*track_index))
-                .and_then(|track| track.path.parent());
-            match directory {
-                Some(directory) => {
-                    if let Err(error) = open_in_file_browser(directory) {
-                        *screen.error = Some(format!(
-                            "Could not open album folder {}: {error}",
-                            directory.display()
-                        ));
-                    }
-                }
-                None => *screen.error = Some("Could not find the album folder".to_owned()),
-            }
-            ui.close_menu();
         }
     });
-}
-
-fn open_in_file_browser(path: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    let mut command = Command::new("xdg-open");
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("open");
-    #[cfg(target_os = "windows")]
-    let mut command = Command::new("explorer");
-    command.arg(path).spawn().map(|_| ())
 }
 
 pub(super) fn paint_cover_with_opacity(

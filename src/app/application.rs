@@ -6,7 +6,7 @@ use crate::{
         library::state::LibraryFeature, lyrics::LyricsFeature, preferences::PreferencesState,
     },
     platform::persistence::settings::{LastFmSettings, Settings, StartupView},
-    shared::{artwork::ArtworkCache, clock::unix_time_seconds},
+    shared::{artwork::ArtworkCache, clock::unix_time_seconds, ui::toasts::Toasts},
     workbench::{Page, WorkbenchState},
 };
 use anyhow::Context;
@@ -30,7 +30,7 @@ pub struct ViperApp {
     pub(crate) lastfm_service: LastFmService,
     pub(crate) lastfm_settings: LastFmSettings,
     pub(super) last_observed_track: Option<usize>,
-    pub(crate) error: Option<String>,
+    pub(crate) toasts: Toasts,
     pub(crate) artwork_cache: ArtworkCache,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
@@ -91,6 +91,7 @@ impl ViperApp {
         let startup_page = match settings.startup_view {
             StartupView::Home => Page::Home,
             StartupView::Albums => Page::Albums,
+            StartupView::Songs => Page::Songs,
         };
         let random_sort_seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -111,7 +112,7 @@ impl ViperApp {
             lastfm_service: LastFmService::default(),
             lastfm_settings,
             last_observed_track: None,
-            error: settings_error.or(lastfm_error),
+            toasts: Toasts::default(),
             artwork_cache: ArtworkCache::new(),
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
@@ -124,11 +125,15 @@ impl ViperApp {
             #[cfg(target_os = "linux")]
             mpris,
         };
+        for error in [settings_error, lastfm_error].into_iter().flatten() {
+            app.toasts.push(error);
+        }
         if let Some(path) = saved_path {
             #[cfg(target_os = "linux")]
             if crate::features::library::is_smb_path(&path) {
                 let Some(auth) = app.smb_auth.clone() else {
-                    app.error = Some("Reconnect to your SMB share in Preferences".into());
+                    app.toasts
+                        .push("Reconnect to your SMB share in Preferences");
                     return app;
                 };
                 app.playback().set_smb_auth(auth);
@@ -168,7 +173,7 @@ impl ViperApp {
             self.artwork_cache.clear();
             self.workbench.show_album_details = false;
             if let Some(error) = settings_error {
-                self.error = Some(error);
+                self.toasts.push(error);
             }
         }
     }
@@ -203,27 +208,30 @@ impl ViperApp {
             Ok(())
         })();
         if let Err(error) = result {
-            self.error = Some(format!("{error:#}"));
+            self.toasts.push(format!("{error:#}"));
         }
     }
 
     pub(crate) fn save_settings(&mut self) {
         if let Err(error) = self.settings.save() {
-            self.error = Some(format!("Could not save settings: {error}"));
+            self.toasts
+                .push(format!("Could not save settings: {error}"));
         }
     }
 
     /// Persist the Discord application ID to the credential store, then save preferences.
     pub(crate) fn save_discord_application_id(&mut self) {
         if let Err(error) = self.settings.save_discord_application_id() {
-            self.error = Some(format!("Could not save Discord application ID: {error}"));
+            self.toasts
+                .push(format!("Could not save Discord application ID: {error}"));
         }
         self.save_settings();
     }
 
     fn save_album_state<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
         if let Err(error) = self.settings.save_album_state(keys) {
-            self.error = Some(format!("Could not save album state: {error}"));
+            self.toasts
+                .push(format!("Could not save album state: {error}"));
         }
     }
 
@@ -231,7 +239,8 @@ impl ViperApp {
         if let Err(error) =
             crate::platform::persistence::settings::save_lastfm_settings(&self.lastfm_settings)
         {
-            self.error = Some(format!("Could not save Last.fm settings: {error}"));
+            self.toasts
+                .push(format!("Could not save Last.fm settings: {error}"));
         }
     }
 

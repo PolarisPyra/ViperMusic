@@ -320,6 +320,9 @@ fn draw_lyrics_lines(
 fn draw_lyrics_toggle(ui: &mut egui::Ui, open: &mut bool) {
     let colors = theme::colors(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, *open, "View lyrics")
+    });
     draw_action_hover(ui, rect, response.hovered());
     ui.painter().text(
         rect.center(),

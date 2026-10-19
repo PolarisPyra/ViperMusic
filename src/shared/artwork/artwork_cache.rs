@@ -9,7 +9,8 @@ use std::{
     },
 };
 
-const MAX_CACHED_ALBUM_TEXTURES: usize = 48;
+/// Covers kept on the GPU; at most 320 px each, so the cache stays around 64 MB.
+const MAX_CACHED_ALBUM_TEXTURES: usize = 160;
 const COVER_FADE_DURATION: f64 = 0.42;
 
 pub(crate) struct ArtworkCache {
@@ -127,9 +128,9 @@ impl ArtworkCache {
                 else {
                     break;
                 };
+                // Keep the fade record so a cover reloaded after eviction appears without fading.
                 if let Some(oldest) = self.texture_lru.remove(oldest_position) {
                     self.textures.remove(&oldest);
-                    self.texture_fade_started_at.remove(&oldest);
                 }
             }
             self.textures.insert(album_index, texture);

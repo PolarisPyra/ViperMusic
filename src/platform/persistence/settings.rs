@@ -18,6 +18,8 @@ pub enum StartupView {
     Home,
     /// Open the album browser.
     Albums,
+    /// Open the list of all songs.
+    Songs,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -397,6 +399,8 @@ pub struct Settings {
     pub album_format_badges: bool,
     /// Whether the album lyrics panel opens when an album track panel is shown.
     pub lyrics_panel_open: bool,
+    /// Interface zoom factor, where 1.0 is the default size.
+    pub ui_zoom: f32,
 }
 
 impl Default for Settings {
@@ -426,6 +430,7 @@ impl Default for Settings {
             album_list_column_widths: [0.50, 0.38, 0.12],
             album_format_badges: true,
             lyrics_panel_open: false,
+            ui_zoom: 1.0,
         }
     }
 }
@@ -446,7 +451,7 @@ impl Settings {
                         album_sort, sort_ascending, discord_application_id, album_layout,
                         compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                         gapless_playback, album_list_column_widths, album_format_badges,
-                        lastfm_scrobbling_enabled
+                        lastfm_scrobbling_enabled, ui_zoom
                  FROM app_settings WHERE id = 1",
                 [],
                 |row| {
@@ -474,6 +479,7 @@ impl Settings {
                         album_list_column_widths: json_column(row, 17)?,
                         album_format_badges: row.get(18)?,
                         lastfm_scrobbling_enabled: row.get(19)?,
+                        ui_zoom: row.get(20)?,
                         ..Self::default()
                     })
                 },
@@ -566,9 +572,9 @@ impl Settings {
                     album_sort, sort_ascending, discord_application_id, album_layout,
                     compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                     gapless_playback, album_list_column_widths, album_format_badges,
-                    lastfm_scrobbling_enabled
+                    lastfm_scrobbling_enabled, ui_zoom
                  ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14,
-                           ?15, ?16, ?17, ?18, ?19)
+                           ?15, ?16, ?17, ?18, ?19, ?20)
                  ON CONFLICT(id) DO UPDATE SET
                     music_path=excluded.music_path, window_width=excluded.window_width,
                     window_height=excluded.window_height, startup_view=excluded.startup_view,
@@ -583,7 +589,8 @@ impl Settings {
                     gapless_playback=excluded.gapless_playback,
                     album_list_column_widths=excluded.album_list_column_widths,
                     album_format_badges=excluded.album_format_badges,
-                    lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled",
+                    lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled,
+                    ui_zoom=excluded.ui_zoom",
                 params![
                     self.music_path
                         .as_deref()
@@ -606,6 +613,7 @@ impl Settings {
                     encode_setting(&self.album_list_column_widths)?,
                     self.album_format_badges,
                     self.lastfm_scrobbling_enabled,
+                    self.ui_zoom,
                 ],
             )
             .map(drop)

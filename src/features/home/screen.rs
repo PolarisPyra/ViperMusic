@@ -3,7 +3,7 @@ use crate::{
         library::{state::LibraryFeature, Album},
         playback::Playback,
     },
-    platform::persistence::settings::Settings,
+    platform::persistence::settings::{AlbumSort, Settings},
     shared::{
         action::AppAction,
         artwork::ArtworkCache,
@@ -18,10 +18,13 @@ struct HomeView<'a> {
     workbench: &'a mut WorkbenchState,
     library: &'a mut LibraryFeature,
     playback: &'a mut Playback,
-    settings: &'a Settings,
+    settings: &'a mut Settings,
     artwork_cache: &'a mut ArtworkCache,
     action: Option<AppAction>,
 }
+
+/// Albums shown per Home shelf; "See all" opens the full list in the album browser.
+const SHELF_LIMIT: usize = 20;
 
 impl HomeView<'_> {
     fn album_texture(
@@ -58,7 +61,7 @@ pub(crate) fn show(
     workbench: &mut WorkbenchState,
     library: &mut LibraryFeature,
     playback: &mut Playback,
-    settings: &Settings,
+    settings: &mut Settings,
     artwork_cache: &mut ArtworkCache,
 ) -> Option<AppAction> {
     let colors = theme::colors(ctx);
@@ -101,7 +104,7 @@ pub(crate) fn show(
                         return;
                     }
 
-                    let filtered = view.library.filtered_album_indices(view.settings);
+                    let filtered = view.library.filtered_album_indices(&*view.settings);
                     if !view.library.view.search.trim().is_empty() && filtered.is_empty() {
                         empty_state(
                             ui,
@@ -165,10 +168,24 @@ pub(crate) fn show(
 
                     show_continue_listening(ui, &mut view);
                     if !recently_added.is_empty() {
-                        album_section(ui, ctx, &mut view, "Recently added", &recently_added);
+                        album_section(
+                            ui,
+                            ctx,
+                            &mut view,
+                            "Recently added",
+                            &recently_added,
+                            AlbumSort::RecentlyAdded,
+                        );
                     }
                     if !recently_played.is_empty() {
-                        album_section(ui, ctx, &mut view, "Recently played", &recently_played);
+                        album_section(
+                            ui,
+                            ctx,
+                            &mut view,
+                            "Recently played",
+                            &recently_played,
+                            AlbumSort::RecentlyPlayed,
+                        );
                     }
                     if favorites.is_empty() {
                         section_heading(ui, "Favorites");
@@ -184,7 +201,14 @@ pub(crate) fn show(
                             view.workbench.page = Page::Albums;
                         }
                     } else {
-                        album_section(ui, ctx, &mut view, "Favorites", &favorites);
+                        album_section(
+                            ui,
+                            ctx,
+                            &mut view,
+                            "Favorites",
+                            &favorites,
+                            AlbumSort::Favorited,
+                        );
                     }
                     ui.add_space(24.0);
                 });
@@ -380,90 +404,166 @@ fn show_continue_listening(ui: &mut egui::Ui, view: &mut HomeView<'_>) {
     ui.add_space(25.0);
 }
 
+/// Draw a horizontal shelf of up to [`SHELF_LIMIT`] albums.
+///
+/// # Arguments
+/// * `see_all` - Album browser sort applied, descending, when the user asks to see every album.
 fn album_section(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     view: &mut HomeView<'_>,
     title: &str,
     indices: &[usize],
+    see_all: AlbumSort,
 ) {
     let colors = theme::colors(ui.ctx());
-    section_heading(ui, title);
-    egui::ScrollArea::horizontal()
+    ui.add_space(5.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title)
+                .size(19.0)
+                .strong()
+                .color(colors.text),
+        );
+        if indices.len() > SHELF_LIMIT {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let link = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("See all {}", indices.len()))
+                            .size(12.0)
+                            .color(colors.accent),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if link.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if link.clicked() {
+                    view.settings.album_sort = see_all;
+                    view.settings.sort_ascending = false;
+                    view.library.view.album_sort_dirty = true;
+                    view.workbench.page = Page::Albums;
+                    view.workbench.show_album_details = false;
+                    view.action = Some(AppAction::SaveSettings);
+                }
+            });
+        }
+    });
+    ui.add_space(11.0);
+    let indices = &indices[..indices.len().min(SHELF_LIMIT)];
+    let output = egui::ScrollArea::horizontal()
         .id_salt(("home-albums", title))
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
+                ui.spacing_mut().item_spacing.x = CARD_GAP;
                 for &index in indices {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(150.0, 207.0), egui::Sense::click());
-                    // Off-screen cards only reserve space, so long shelves stay cheap to draw and
-                    // never request artwork decoding for covers the user cannot see.
-                    if !ui.is_rect_visible(rect) {
-                        continue;
-                    }
-                    let texture = view.album_texture(ctx, index);
-                    let Some(album) = view.library.model.albums.get(index) else {
-                        continue;
-                    };
-                    ui.painter().rect_filled(rect, 9.0, colors.panel);
-                    let art_rect = egui::Rect::from_min_size(
-                        rect.min + egui::vec2(7.0, 7.0),
-                        egui::vec2(136.0, 136.0),
-                    );
-                    if let Some(texture) = texture {
-                        ui.painter().image(
-                            texture.id(),
-                            art_rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                    } else {
-                        ui.painter().rect_filled(art_rect, 7.0, colors.surface);
-                        ui.painter().text(
-                            art_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::DISC,
-                            icon_font(32.0),
-                            colors.muted,
-                        );
-                    }
-                    let painter = ui.painter().with_clip_rect(rect.shrink(7.0));
-                    painter.text(
-                        rect.min + egui::vec2(9.0, 153.0),
-                        egui::Align2::LEFT_TOP,
-                        &album.title,
-                        egui::FontId::proportional(13.0),
-                        colors.text,
-                    );
-                    painter.text(
-                        rect.min + egui::vec2(9.0, 174.0),
-                        egui::Align2::LEFT_TOP,
-                        &album.artist,
-                        egui::FontId::proportional(11.0),
-                        colors.muted,
-                    );
-                    if response.hovered() {
-                        ui.painter().rect_stroke(
-                            rect,
-                            9.0,
-                            egui::Stroke::new(1.0_f32, colors.accent),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                    if response.clicked() {
-                        view.library.view.selected_track = None;
-                        view.library.view.selected_album = Some(index);
-                        view.library.view.highlighted_album = Some(index);
-                        view.workbench.show_album_details = true;
-                        view.workbench.page = Page::Albums;
-                        ctx.request_repaint();
-                    }
+                    album_card(ui, ctx, view, index);
                 }
             });
+            // Keep the horizontal scrollbar clear of the album titles.
+            ui.add_space(12.0);
         });
-    ui.add_space(22.0);
+    scroll_shelf_with_wheel(ui, output);
+    ui.add_space(14.0);
+}
+
+const CARD_ART: f32 = 144.0;
+const CARD_GAP: f32 = 16.0;
+
+/// Draw one album card; click opens the album and double-click plays it.
+fn album_card(ui: &mut egui::Ui, ctx: &egui::Context, view: &mut HomeView<'_>, index: usize) {
+    let colors = theme::colors(ui.ctx());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(CARD_ART, CARD_ART + 46.0), egui::Sense::click());
+    // Off-screen cards only reserve space, so shelves stay cheap to draw and never request
+    // artwork decoding for covers the user cannot see.
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let texture = view.album_texture(ctx, index);
+    let Some(album) = view.library.model.albums.get(index) else {
+        return;
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("{} by {}", album.title, album.artist),
+        )
+    });
+    let art_rect = egui::Rect::from_min_size(rect.min, egui::vec2(CARD_ART, CARD_ART));
+    if let Some(texture) = texture {
+        ui.painter().image(
+            texture.id(),
+            art_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    } else {
+        ui.painter().rect_filled(art_rect, 7.0, colors.surface);
+        ui.painter().text(
+            art_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::DISC,
+            icon_font(32.0),
+            colors.muted,
+        );
+    }
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            art_rect,
+            4.0,
+            egui::Stroke::new(2.0_f32, colors.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    for (text, y, size, color) in [
+        (&album.title, CARD_ART + 9.0, 13.0, colors.text),
+        (&album.artist, CARD_ART + 28.0, 11.0, colors.muted),
+    ] {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.clone(),
+            egui::FontId::proportional(size),
+            color,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(CARD_ART);
+        let galley = ui.fonts(|fonts| fonts.layout_job(job));
+        ui.painter()
+            .galley(rect.min + egui::vec2(0.0, y), galley, color);
+    }
+    let response = response.on_hover_text("Double-click to play");
+    if response.double_clicked() {
+        if let Some(album) = view.library.model.albums.get(index) {
+            view.playback.play_album(album, &view.library.model.tracks);
+        }
+    } else if response.clicked() {
+        view.workbench.open_album(&mut view.library.view, index);
+        ctx.request_repaint();
+    }
+}
+
+/// Scroll a shelf horizontally with the vertical mouse wheel while the pointer is over it.
+///
+/// The wheel falls through to the page once the shelf reaches either end.
+fn scroll_shelf_with_wheel(ui: &egui::Ui, output: egui::scroll_area::ScrollAreaOutput<()>) {
+    let hovered = ui
+        .ctx()
+        .pointer_hover_pos()
+        .is_some_and(|pointer| output.inner_rect.contains(pointer));
+    let delta = ui.input(|input| input.smooth_scroll_delta.y);
+    if !hovered || delta == 0.0 {
+        return;
+    }
+    let mut state = output.state;
+    let max_offset = (output.content_size.x - output.inner_rect.width()).max(0.0);
+    let offset = (state.offset.x - delta).clamp(0.0, max_offset);
+    if offset != state.offset.x {
+        state.offset.x = offset;
+        state.store(ui.ctx(), output.id);
+        ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
+        ui.ctx().request_repaint();
+    }
 }
 
 fn section_heading(ui: &mut egui::Ui, title: &str) {

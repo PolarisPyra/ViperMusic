@@ -3,7 +3,7 @@ use std::io::Cursor;
 
 pub(crate) fn decode_album_art(bytes: &[u8]) -> Option<egui::ColorImage> {
     match image::load_from_memory(bytes) {
-        Ok(image) => Some(color_image(image.thumbnail(512, 512))),
+        Ok(image) => Some(color_image(image.thumbnail(320, 320))),
         Err(error) => {
             eprintln!("Could not decode album artwork: {error}");
             None

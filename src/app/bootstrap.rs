@@ -115,7 +115,9 @@ pub fn run() -> eframe::Result<()> {
                 style.spacing.scroll.interact_background_opacity = 0.0;
                 style.interaction.selectable_labels = false;
             });
-            Ok(Box::new(ViperApp::with_settings_result(settings)))
+            let app = ViperApp::with_settings_result(settings);
+            cc.egui_ctx.set_zoom_factor(app.settings.ui_zoom);
+            Ok(Box::new(app))
         }),
     )
 }

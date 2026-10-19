@@ -3,7 +3,7 @@ use crate::{
     shared::{
         action::AppAction,
         ui::{
-            controls::{close_button, modal_frame},
+            controls::{close_button, menu_entry, modal_frame},
             theme::{self, Palette},
         },
     },
@@ -127,21 +127,21 @@ pub(in crate::workbench) fn show(
                                 } else {
                                     "Play Selected Album"
                                 };
-                                if enabled_menu_item(ui, can_play, play_label) {
+                                if menu_entry(ui, can_play, play_label) {
                                     playback.play_pause(library);
                                 }
                                 ui.separator();
-                                if enabled_menu_item(
+                                if menu_entry(
                                     ui,
                                     has_current_track || playback.has_history(),
                                     "Previous Track",
                                 ) {
                                     playback.previous(&library.model.tracks);
                                 }
-                                if enabled_menu_item(ui, playback.has_next(), "Next Track") {
+                                if menu_entry(ui, playback.has_next(), "Next Track") {
                                     playback.skip_next(&library.model.tracks);
                                 }
-                                if enabled_menu_item(ui, has_current_track, "Stop") {
+                                if menu_entry(ui, has_current_track, "Stop") {
                                     playback.stop();
                                 }
                             },
@@ -150,19 +150,14 @@ pub(in crate::workbench) fn show(
                             egui::RichText::new("View").size(12.0).color(colors.muted),
                             |ui| {
                                 style_menu_popup(ui);
-                                if ui
-                                    .selectable_label(workbench.page == Page::Home, "Home")
-                                    .clicked()
-                                {
-                                    workbench.page = Page::Home;
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .selectable_label(workbench.page == Page::Albums, "Albums")
-                                    .clicked()
-                                {
-                                    workbench.page = Page::Albums;
-                                    ui.close_menu();
+                                for page in Page::ALL {
+                                    if ui
+                                        .selectable_label(workbench.page == page, page.label())
+                                        .clicked()
+                                    {
+                                        workbench.page = page;
+                                        ui.close_menu();
+                                    }
                                 }
                             },
                         );
@@ -182,7 +177,6 @@ pub(in crate::workbench) fn show(
         });
 
     ctx.set_style(original_style);
-    show_queue_popup(ctx, workbench, playback, library);
     show_shortcuts_popup(ctx, workbench);
     action
 }
@@ -216,10 +210,15 @@ fn show_shortcuts_popup(ctx: &egui::Context, workbench: &mut WorkbenchState) {
             ui.add_space(8.0);
             let shortcuts = [
                 ("F", "Focus search"),
+                ("Arrows", "Move the selection"),
+                ("Enter", "Open album or play the selected song"),
+                ("Space", "Play or pause"),
+                ("Ctrl ← / →", "Seek 5 seconds"),
+                ("Ctrl ↑ / ↓", "Change volume"),
+                ("Ctrl + / − / 0", "Zoom in, out, or reset"),
                 ("F5", "Play a random song"),
                 ("Q", "Show or hide queue"),
-                ("Space", "Play or pause"),
-                ("Esc", "Close album details"),
+                ("Esc", "Close panels and album details"),
             ];
             for (shortcut, description) in shortcuts {
                 ui.horizontal(|ui| {
@@ -243,278 +242,6 @@ fn show_shortcuts_popup(ctx: &egui::Context, workbench: &mut WorkbenchState) {
     if close_requested || response.should_close() {
         workbench.show_shortcuts = false;
     }
-}
-
-fn show_queue_popup(
-    ctx: &egui::Context,
-    workbench: &mut WorkbenchState,
-    playback: &mut Playback,
-    library: &LibraryFeature,
-) {
-    if !workbench.show_queue {
-        return;
-    }
-
-    let colors = theme::colors(ctx);
-    let screen_size = ctx.screen_rect().size();
-    let margin = 24.0_f32.min(screen_size.x * 0.05).min(screen_size.y * 0.05);
-    let panel_size = egui::vec2(
-        (screen_size.x - margin * 2.0).clamp(0.0, 560.0),
-        (screen_size.y - margin * 2.0).clamp(0.0, 620.0),
-    );
-    let content_size = (panel_size - egui::vec2(36.0, 36.0)).max(egui::Vec2::ZERO);
-    let mut close_requested = false;
-    let mut clear_requested = false;
-
-    let response = egui::Modal::new(egui::Id::new("playback-queue-modal"))
-        .frame(modal_frame(colors))
-        .backdrop_color(colors.backdrop)
-        .show(ctx, |ui| {
-            ui.set_min_width(content_size.x);
-            ui.set_max_width(content_size.x);
-            if playback.queue().len() > 8 {
-                ui.set_min_height(content_size.y);
-            }
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("Up Next")
-                            .size(23.0)
-                            .strong()
-                            .color(colors.text),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} queued song{}",
-                            playback.queue().len(),
-                            if playback.queue().len() == 1 { "" } else { "s" }
-                        ))
-                        .size(12.0)
-                        .color(colors.muted),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close_requested = close_button(ui, "Close queue");
-                });
-            });
-            ui.add_space(16.0);
-            ui.separator();
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if let Some(current) = playback
-                    .current
-                    .and_then(|index| library.model.tracks.get(index))
-                {
-                    egui::Frame::new()
-                        .fill(colors.surface)
-                        .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                        .corner_radius(9.0)
-                        .inner_margin(egui::Margin::symmetric(12, 10))
-                        .show(ui, |ui| {
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new("NOW PLAYING")
-                                        .size(10.0)
-                                        .strong()
-                                        .color(colors.accent),
-                                );
-                                ui.add_space(3.0);
-                                ui.label(
-                                    egui::RichText::new(&current.title)
-                                        .size(13.0)
-                                        .strong()
-                                        .color(colors.text),
-                                );
-                                ui.label(
-                                    egui::RichText::new(&current.artist)
-                                        .size(11.0)
-                                        .color(colors.muted),
-                                );
-                            });
-                        });
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let clear_button =
-                        egui::Button::new(egui::RichText::new("Clear all").size(12.0).color(
-                            if playback.queue().is_empty() {
-                                colors.subtle
-                            } else {
-                                colors.text
-                            },
-                        ))
-                        .min_size(egui::vec2(112.0, 38.0))
-                        .corner_radius(9.0)
-                        .fill(colors.surface)
-                        .stroke(egui::Stroke::new(1.0_f32, colors.border));
-                    if ui
-                        .add_enabled(!playback.queue().is_empty(), clear_button)
-                        .clicked()
-                    {
-                        clear_requested = true;
-                    }
-                });
-            });
-            ui.add_space(12.0);
-
-            let mut remove = None;
-            let mut move_item = None;
-            if playback.queue().is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(12.0);
-                    ui.label(
-                        egui::RichText::new("The queue is empty")
-                            .size(15.0)
-                            .strong()
-                            .color(colors.text),
-                    );
-                    ui.label(
-                        egui::RichText::new("Right-click a song to add it to Up Next.")
-                            .size(12.0)
-                            .color(colors.muted),
-                    );
-                });
-            } else {
-                let queue_len = playback.queue().len();
-                let mut show_items = |ui: &mut egui::Ui| {
-                    ui.spacing_mut().item_spacing.y = 7.0;
-                    for (index, track_index) in playback.queue().iter().copied().enumerate() {
-                        egui::Frame::new()
-                            .fill(colors.surface)
-                            .stroke(egui::Stroke::new(1.0_f32, colors.border))
-                            .corner_radius(8.0)
-                            .inner_margin(egui::Margin::symmetric(10, 7))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{:02}", index + 1))
-                                            .size(11.0)
-                                            .color(colors.subtle),
-                                    );
-                                    ui.vertical(|ui| {
-                                        if let Some(track) = library.model.tracks.get(track_index) {
-                                            ui.label(
-                                                egui::RichText::new(&track.title)
-                                                    .size(12.0)
-                                                    .strong()
-                                                    .color(colors.text),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(&track.artist)
-                                                    .size(10.0)
-                                                    .color(colors.muted),
-                                            );
-                                        } else {
-                                            ui.label("Unavailable track");
-                                        }
-                                    });
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if queue_action_button(
-                                                ui,
-                                                "remove-queue-item",
-                                                index,
-                                                egui_phosphor::regular::X,
-                                                "Remove from queue",
-                                                true,
-                                            )
-                                            .clicked()
-                                            {
-                                                remove = Some(index);
-                                            }
-                                            if queue_action_button(
-                                                ui,
-                                                "move-queue-item-down",
-                                                index,
-                                                egui_phosphor::regular::ARROW_DOWN,
-                                                "Move down",
-                                                index + 1 < queue_len,
-                                            )
-                                            .clicked()
-                                            {
-                                                move_item = Some((index, index + 1));
-                                            }
-                                            if queue_action_button(
-                                                ui,
-                                                "move-queue-item-up",
-                                                index,
-                                                egui_phosphor::regular::ARROW_UP,
-                                                "Move up",
-                                                index > 0,
-                                            )
-                                            .clicked()
-                                            {
-                                                move_item = Some((index, index - 1));
-                                            }
-                                        },
-                                    );
-                                });
-                            });
-                    }
-                };
-                if queue_len <= 8 {
-                    show_items(ui);
-                } else {
-                    egui::ScrollArea::vertical()
-                        .id_salt("playback-queue-list")
-                        .max_height(420.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| show_items(ui));
-                }
-                drop(show_items);
-            }
-
-            if let Some((from, to)) = move_item {
-                playback.move_queued(from, to);
-            }
-            if let Some(index) = remove {
-                playback.remove_queued(index);
-            }
-        });
-
-    if close_requested || response.should_close() {
-        workbench.show_queue = false;
-    }
-    if clear_requested {
-        playback.clear_queue();
-    }
-}
-
-fn queue_action_button(
-    ui: &mut egui::Ui,
-    salt: &'static str,
-    index: usize,
-    icon: &str,
-    tooltip: &'static str,
-    enabled: bool,
-) -> egui::Response {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
-    let response = ui.interact(
-        rect,
-        ui.id().with((salt, index)),
-        if enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-    let colors = theme::colors(ui.ctx());
-    if response.hovered() && enabled {
-        ui.painter().rect_filled(rect, 7.0, colors.hover);
-    }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        theme::icon_font(20.0),
-        if response.hovered() && enabled {
-            colors.text
-        } else {
-            colors.muted
-        },
-    );
-    response.on_hover_text(tooltip)
 }
 
 pub(crate) fn style_menu_popup(ui: &mut egui::Ui) {
@@ -554,19 +281,4 @@ fn style_menu_visuals(visuals: &mut egui::Visuals, colors: Palette) {
 fn menu_item(ui: &mut egui::Ui, label: &str) -> egui::Response {
     let colors = theme::colors(ui.ctx());
     ui.selectable_label(false, egui::RichText::new(label).color(colors.text))
-}
-
-/// Draw a menu entry that can be disabled, closing the menu when it is clicked.
-fn enabled_menu_item(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
-    let colors = theme::colors(ui.ctx());
-    let clicked = ui
-        .add_enabled(
-            enabled,
-            egui::SelectableLabel::new(false, egui::RichText::new(label).color(colors.text)),
-        )
-        .clicked();
-    if clicked {
-        ui.close_menu();
-    }
-    clicked
 }

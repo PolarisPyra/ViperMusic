@@ -36,6 +36,16 @@ const LATE_MIGRATIONS: [(i64, &str); 7] = [
     (16, include_str!("migrations/0016_lastfm.sql")),
 ];
 
+/// Column additions applied whenever the column is missing, keyed by table and column.
+///
+/// Development builds from other branches may have advanced `user_version` past these steps
+/// with different schema changes, so their presence is checked directly instead of by version.
+const COLUMN_MIGRATIONS: [(&str, &str, &str); 1] = [(
+    "app_settings",
+    "ui_zoom",
+    include_str!("migrations/0017_ui_zoom.sql"),
+)];
+
 /// Whether the database file has been located, migrated, and switched to WAL in this process.
 static INITIALIZED: Mutex<bool> = Mutex::new(false);
 
@@ -164,6 +174,18 @@ fn migrate(connection: &mut Connection) -> io::Result<()> {
             apply(connection, target, |transaction| {
                 transaction.execute_batch(schema)
             })?;
+        }
+    }
+    for (table, column, schema) in COLUMN_MIGRATIONS {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                [table, column],
+                |row| row.get(0),
+            )
+            .map_err(database_error)?;
+        if !exists {
+            connection.execute_batch(schema).map_err(database_error)?;
         }
     }
     Ok(())

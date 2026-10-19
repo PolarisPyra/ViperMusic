@@ -64,7 +64,7 @@ pub(in crate::workbench) fn show(
         .show(ctx, |ui| {
             // Switch the nav layout with the live width so labels do not clip while resizing.
             let compact = resize_state.width < COMPACT_THRESHOLD;
-            for page in [Page::Home, Page::Albums] {
+            for page in Page::ALL {
                 if let Some(save_error) = nav_item(ui, page, compact, workbench, settings) {
                     error = Some(save_error);
                 }
@@ -154,13 +154,11 @@ fn nav_item(
     workbench: &mut WorkbenchState,
     settings: &mut Settings,
 ) -> Option<String> {
-    let (label, icon, startup_view) = match page {
-        Page::Home => (
-            "Home",
-            egui_phosphor::regular::HOUSE_SIMPLE,
-            StartupView::Home,
-        ),
-        Page::Albums => ("Albums", egui_phosphor::regular::DISC, StartupView::Albums),
+    let label = page.label();
+    let (icon, startup_view) = match page {
+        Page::Home => (egui_phosphor::regular::HOUSE_SIMPLE, StartupView::Home),
+        Page::Albums => (egui_phosphor::regular::DISC, StartupView::Albums),
+        Page::Songs => (egui_phosphor::regular::MUSIC_NOTES, StartupView::Songs),
     };
     let mut error = None;
     let colors = theme::colors(ui.ctx());

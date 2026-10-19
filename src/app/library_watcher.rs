@@ -11,7 +11,7 @@ impl ViperApp {
         );
         for event in events {
             match event {
-                WatcherEvent::Error(error) => self.error = Some(error),
+                WatcherEvent::Error(error) => self.toasts.push(error),
                 WatcherEvent::Updated(discovered, removed_paths) => {
                     let update = self
                         .library

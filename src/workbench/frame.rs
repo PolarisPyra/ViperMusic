@@ -25,11 +25,12 @@ pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> V
         context.library,
         context.settings,
         context.artwork_cache,
-        context.error,
+        context.toasts,
     );
     if let Some(error) = shell::sidebar::show(ctx, context.settings, context.state) {
-        *context.error = Some(error);
+        context.toasts.push(error);
     }
+    shell::queue_panel::show(ctx, context.state, context.playback, context.library);
     actions.extend(content_host::show(ctx, context));
     actions.extend(crate::features::preferences::show(
         ctx,
