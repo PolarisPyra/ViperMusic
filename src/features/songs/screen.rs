@@ -4,7 +4,13 @@ use crate::{
         playback::Playback,
         track_menu::{self, TrackMenuAction},
     },
-    shared::ui::{controls::search_field, theme, toasts::Toasts},
+    platform::persistence::settings::Settings,
+    shared::ui::{
+        column_resize::{column_boundaries, show_column_handles},
+        controls::search_field,
+        theme,
+        toasts::Toasts,
+    },
     workbench::WorkbenchState,
 };
 use eframe::egui;
@@ -13,6 +19,8 @@ const ROW_HEIGHT: f32 = 36.0;
 const HEADER_HEIGHT: f32 = 32.0;
 const NUMBER_WIDTH: f32 = 56.0;
 const DURATION_WIDTH: f32 = 64.0;
+/// Gap between a flexible column's divider and the text drawn after it.
+const COLUMN_TEXT_INSET: f32 = 8.0;
 
 /// Draw every library track as a searchable, virtualized list.
 ///
@@ -23,12 +31,14 @@ const DURATION_WIDTH: f32 = 64.0;
 /// * `workbench` - Page state, used when navigating to an album.
 /// * `library` - Loaded library and the shared search and selection state.
 /// * `playback` - Playback queue started by double-clicking a song.
-/// * `toasts` - Receives errors from context menu actions.
+/// * `settings` - Persisted song list column widths, updated by header drags.
+/// * `toasts` - Receives errors from context menu actions and saving column widths.
 pub(crate) fn show(
     ctx: &egui::Context,
     workbench: &mut WorkbenchState,
     library: &mut LibraryFeature,
     playback: &mut Playback,
+    settings: &mut Settings,
     toasts: &mut Toasts,
 ) {
     let colors = theme::colors(ctx);
@@ -86,12 +96,27 @@ pub(crate) fn show(
                     egui::Sense::hover(),
                 )
                 .0;
-            let columns = Columns::new(header);
+            let (start, end) = Columns::flexible_span(header);
+            if show_column_handles(
+                ui,
+                header,
+                start,
+                end,
+                &mut settings.song_list_column_widths,
+                "song-list-column-resize",
+            ) {
+                if let Err(save_error) = settings.save() {
+                    toasts.push(format!(
+                        "Could not save song list column widths: {save_error}"
+                    ));
+                }
+            }
+            let columns = Columns::new(header, settings.song_list_column_widths);
             for (x, label) in [
                 (columns.number, "#"),
-                (columns.title, "Title"),
-                (columns.artist, "Artist"),
-                (columns.album, "Album"),
+                (columns.title + COLUMN_TEXT_INSET, "Title"),
+                (columns.artist + COLUMN_TEXT_INSET, "Artist"),
+                (columns.album + COLUMN_TEXT_INSET, "Album"),
                 (columns.duration, "Time"),
             ] {
                 ui.painter().text(
@@ -127,6 +152,7 @@ pub(crate) fn show(
                 playback,
                 toasts,
                 songs: &songs,
+                column_widths: settings.song_list_column_widths,
             };
             scroll.show_rows(ui, ROW_HEIGHT, songs.len(), |ui, visible| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -153,18 +179,34 @@ struct Columns {
 }
 
 impl Columns {
-    fn new(row: egui::Rect) -> Self {
-        let number = row.left() + 8.0;
-        let title = number + NUMBER_WIDTH;
-        let flexible = (row.width() - NUMBER_WIDTH - DURATION_WIDTH - 16.0).max(0.0);
-        let artist = title + flexible * 0.42;
-        let album = artist + flexible * 0.29;
+    /// Span shared by the flexible Title, Artist, and Album columns.
+    ///
+    /// # Arguments
+    /// * `row` - Header or row rectangle the columns sit in.
+    ///
+    /// # Returns
+    /// The left edge after the track number and the left edge of the duration column.
+    fn flexible_span(row: egui::Rect) -> (f32, f32) {
+        (
+            row.left() + 8.0 + NUMBER_WIDTH,
+            row.right() - DURATION_WIDTH,
+        )
+    }
+
+    /// Lay out the song columns across `row` using the persisted column proportions.
+    ///
+    /// # Arguments
+    /// * `row` - Header or row rectangle the columns sit in.
+    /// * `proportions` - Relative widths of the Title, Artist, and Album columns.
+    fn new(row: egui::Rect, proportions: [f32; 3]) -> Self {
+        let (start, end) = Self::flexible_span(row);
+        let [title, artist, album, duration] = column_boundaries(start, end, proportions);
         Self {
-            number,
+            number: row.left() + 8.0,
             title,
             artist,
             album,
-            duration: row.right() - DURATION_WIDTH,
+            duration,
             right: row.right(),
         }
     }
@@ -177,6 +219,7 @@ struct SongRows<'a> {
     playback: &'a mut Playback,
     toasts: &'a mut Toasts,
     songs: &'a [usize],
+    column_widths: [f32; 3],
 }
 
 impl SongRows<'_> {
@@ -191,6 +234,7 @@ impl SongRows<'_> {
             playback,
             toasts,
             songs,
+            column_widths,
         } = self;
         let track_index = *songs.get(position)?;
         let colors = theme::colors(ui.ctx());
@@ -233,7 +277,7 @@ impl SongRows<'_> {
                 },
             );
         }
-        let columns = Columns::new(rect);
+        let columns = Columns::new(rect, *column_widths);
         let center = rect.center().y;
         if playing {
             ui.painter().text(
@@ -277,9 +321,10 @@ impl SongRows<'_> {
                 colors.muted,
             ),
         ] {
-            let clip = egui::Rect::from_x_y_ranges(left..=right - 12.0, rect.y_range());
+            let text_x = left + COLUMN_TEXT_INSET;
+            let clip = egui::Rect::from_x_y_ranges(text_x..=right - 12.0, rect.y_range());
             ui.painter().with_clip_rect(clip).text(
-                egui::pos2(left, center),
+                egui::pos2(text_x, center),
                 egui::Align2::LEFT_CENTER,
                 text,
                 egui::FontId::proportional(13.0),

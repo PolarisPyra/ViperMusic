@@ -41,6 +41,7 @@ pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> O
                 context.state,
                 context.library,
                 context.playback,
+                context.settings,
                 context.toasts,
             );
             None

@@ -395,6 +395,8 @@ pub struct Settings {
     pub album_layout: AlbumLayout,
     /// Relative widths for the Title, Artist, and Date columns in album list view.
     pub album_list_column_widths: [f32; 3],
+    /// Relative widths for the Title, Artist, and Album columns in the songs list.
+    pub song_list_column_widths: [f32; 3],
     /// Whether album artwork displays audio format badges.
     pub album_format_badges: bool,
     /// Whether the album lyrics panel opens when an album track panel is shown.
@@ -428,6 +430,7 @@ impl Default for Settings {
             gapless_playback: false,
             album_layout: AlbumLayout::Grid,
             album_list_column_widths: [0.50, 0.38, 0.12],
+            song_list_column_widths: [0.42, 0.29, 0.29],
             album_format_badges: true,
             lyrics_panel_open: false,
             ui_zoom: 1.0,
@@ -451,7 +454,7 @@ impl Settings {
                         album_sort, sort_ascending, discord_application_id, album_layout,
                         compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                         gapless_playback, album_list_column_widths, album_format_badges,
-                        lastfm_scrobbling_enabled, ui_zoom
+                        lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths
                  FROM app_settings WHERE id = 1",
                 [],
                 |row| {
@@ -480,6 +483,7 @@ impl Settings {
                         album_format_badges: row.get(18)?,
                         lastfm_scrobbling_enabled: row.get(19)?,
                         ui_zoom: row.get(20)?,
+                        song_list_column_widths: json_column(row, 21)?,
                         ..Self::default()
                     })
                 },
@@ -572,9 +576,9 @@ impl Settings {
                     album_sort, sort_ascending, discord_application_id, album_layout,
                     compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                     gapless_playback, album_list_column_widths, album_format_badges,
-                    lastfm_scrobbling_enabled, ui_zoom
+                    lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths
                  ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14,
-                           ?15, ?16, ?17, ?18, ?19, ?20)
+                           ?15, ?16, ?17, ?18, ?19, ?20, ?21)
                  ON CONFLICT(id) DO UPDATE SET
                     music_path=excluded.music_path, window_width=excluded.window_width,
                     window_height=excluded.window_height, startup_view=excluded.startup_view,
@@ -590,7 +594,8 @@ impl Settings {
                     album_list_column_widths=excluded.album_list_column_widths,
                     album_format_badges=excluded.album_format_badges,
                     lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled,
-                    ui_zoom=excluded.ui_zoom",
+                    ui_zoom=excluded.ui_zoom,
+                    song_list_column_widths=excluded.song_list_column_widths",
                 params![
                     self.music_path
                         .as_deref()
@@ -614,6 +619,7 @@ impl Settings {
                     self.album_format_badges,
                     self.lastfm_scrobbling_enabled,
                     self.ui_zoom,
+                    encode_setting(&self.song_list_column_widths)?,
                 ],
             )
             .map(drop)

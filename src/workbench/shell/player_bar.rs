@@ -429,7 +429,9 @@ pub(in crate::workbench) fn show(
                 } else {
                     0.0
                 };
-                let knob_x = track_rect.left() + track_rect.width() * fraction;
+                // Fill and knob share one pixel-snapped edge so they never drift apart by a pixel.
+                let knob_x = (track_rect.left() + track_rect.width() * fraction)
+                    .round_to_pixels(ui.pixels_per_point());
                 ui.painter().rect_filled(
                     egui::Rect::from_min_max(
                         track_rect.min,
@@ -439,10 +441,7 @@ pub(in crate::workbench) fn show(
                     colors.accent,
                 );
                 if current.is_some() && duration.is_some() {
-                    let thumb_center = egui::pos2(
-                        knob_x.round_to_pixel_center(ui.pixels_per_point()),
-                        rect.center().y,
-                    );
+                    let thumb_center = egui::pos2(knob_x, rect.center().y);
                     ui.painter().rect_filled(
                         egui::Rect::from_center_size(thumb_center, egui::vec2(6.0, 12.0)),
                         3.0,
@@ -482,7 +481,8 @@ pub(in crate::workbench) fn show(
                 colors.muted,
             );
             if playback.is_playing() {
-                ctx.request_repaint_after(Duration::from_millis(100));
+                // About 30 fps keeps the seek bar advancing evenly instead of in 100 ms steps.
+                ctx.request_repaint_after(Duration::from_millis(33));
             }
             if let Some(album_index) = open_album {
                 workbench.open_album(&mut library.view, album_index);

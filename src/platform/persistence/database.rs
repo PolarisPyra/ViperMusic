@@ -40,11 +40,18 @@ const LATE_MIGRATIONS: [(i64, &str); 7] = [
 ///
 /// Development builds from other branches may have advanced `user_version` past these steps
 /// with different schema changes, so their presence is checked directly instead of by version.
-const COLUMN_MIGRATIONS: [(&str, &str, &str); 1] = [(
-    "app_settings",
-    "ui_zoom",
-    include_str!("migrations/0017_ui_zoom.sql"),
-)];
+const COLUMN_MIGRATIONS: [(&str, &str, &str); 2] = [
+    (
+        "app_settings",
+        "ui_zoom",
+        include_str!("migrations/0017_ui_zoom.sql"),
+    ),
+    (
+        "app_settings",
+        "song_list_column_widths",
+        include_str!("migrations/0018_song_list_column_widths.sql"),
+    ),
+];
 
 /// Whether the database file has been located, migrated, and switched to WAL in this process.
 static INITIALIZED: Mutex<bool> = Mutex::new(false);
