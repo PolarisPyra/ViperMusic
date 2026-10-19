@@ -40,6 +40,12 @@ impl ViperApp {
                     workbench.page = Page::Albums;
                     workbench.show_album_details = false;
                 }
+                // The typed character arrives as a separate text event; drop it so the newly focused field doesn't receive it.
+                ctx.input_mut(|input| {
+                    input.events.retain(|event| {
+                        !matches!(event, egui::Event::Text(text) if matches!(text.as_str(), "f" | "F"))
+                    });
+                });
                 ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(SEARCH_FIELD_ID)));
             }
             if consume(Modifiers::NONE, Key::Q) {
