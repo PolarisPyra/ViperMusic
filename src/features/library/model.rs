@@ -52,6 +52,14 @@ pub struct Track {
 }
 
 impl Track {
+    /// Return whether this track is a lossless encoding, judged by its sample bit depth.
+    ///
+    /// # Returns
+    /// `true` when the decoder reported a bit depth, which only lossless formats do.
+    pub fn is_lossless(&self) -> bool {
+        self.audio.bit_depth.is_some()
+    }
+
     /// Compare tracks by disc, track number, and path for album playback order.
     ///
     /// # Arguments
@@ -98,27 +106,37 @@ pub struct Album {
     pub tracks: Vec<usize>,
     /// Shared encoded album artwork, if available.
     pub art: Option<Arc<[u8]>>,
+    /// Whether this album holds lossless copies, which are kept apart from lossy copies.
+    pub lossless: bool,
 }
 
 impl Album {
     /// Create an album from the tags of its first track.
     ///
     /// # Arguments
-    /// * `first_track` - Track supplying the album title and album artist.
+    /// * `first_track` - Track supplying the album title, album artist, and encoding.
     /// * `tracks` - Track indexes into [`Library::tracks`], ordered for playback.
     /// * `art` - Shared encoded album artwork, if available.
     ///
     /// # Returns
-    /// An album with trimmed metadata and its persisted-state key.
+    /// An album with trimmed metadata and its persisted-state key. Lossless albums get a
+    /// distinct key so their ratings and play counts stay separate from the lossy copy.
     pub fn new(first_track: &Track, tracks: Vec<usize>, art: Option<Arc<[u8]>>) -> Self {
         let title = first_track.album.trim().to_owned();
         let artist = first_track.album_artist.trim().to_owned();
+        let lossless = first_track.is_lossless();
+        let key = if lossless {
+            format!("{artist}\0{title}\0lossless")
+        } else {
+            format!("{artist}\0{title}")
+        };
         Self {
-            key: format!("{artist}\0{title}"),
+            key,
             title,
             artist,
             tracks,
             art,
+            lossless,
         }
     }
 }
@@ -147,7 +165,7 @@ pub struct Library {
 pub struct DiscoveredTracks {
     /// Tracks not yet merged into the loaded library.
     pub tracks: Vec<Track>,
-    pub(super) album_art: HashMap<(String, String), Arc<[u8]>>,
+    pub(super) album_art: HashMap<(String, String, bool), Arc<[u8]>>,
 }
 
 /// Atomic progress counters for an active library scan.

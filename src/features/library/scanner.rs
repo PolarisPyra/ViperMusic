@@ -140,7 +140,7 @@ pub(crate) fn scan_library_with_auth(
         return Library::default();
     }
     #[cfg(target_os = "linux")]
-    let mut smb_album_art: HashMap<(String, String), Arc<[u8]>> = HashMap::new();
+    let mut smb_album_art: HashMap<(String, String, bool), Arc<[u8]>> = HashMap::new();
     progress.phase.store(1, Ordering::Relaxed);
     progress.total.store(audio_paths.len(), Ordering::Relaxed);
     let scan_path = |path: &PathBuf| {
@@ -291,7 +291,7 @@ pub(crate) fn scan_library_with_auth(
             if !track.album.trim().is_empty() {
                 if let Some(art) = embedded_art {
                     smb_album_art
-                        .entry(album_key(&track.album, &track.album_artist))
+                        .entry(album_key(&track.album, &track.album_artist, track.is_lossless()))
                         .or_insert(art);
                 }
             }
@@ -339,14 +339,14 @@ pub(crate) fn scan_library_with_auth(
     }
     tracks.par_sort_unstable_by(|left, right| left.path.cmp(&right.path));
 
-    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String, bool), Vec<usize>> = BTreeMap::new();
     for (index, track) in tracks.iter().enumerate() {
         // Keep tracks with missing album tags playable, but don't manufacture an album for them.
         if track.album.trim().is_empty() {
             continue;
         }
         groups
-            .entry(album_key(&track.album, &track.album_artist))
+            .entry(album_key(&track.album, &track.album_artist, track.is_lossless()))
             .or_default()
             .push(index);
     }
@@ -429,7 +429,7 @@ pub fn scan_added_tracks(paths: &[PathBuf], cancel: &AtomicBool) -> DiscoveredTr
         if track.album.trim().is_empty() {
             continue;
         }
-        let key = album_key(&track.album, &track.album_artist);
+        let key = album_key(&track.album, &track.album_artist, track.is_lossless());
         if seen_album_art.insert(key.clone()) {
             if let Some(art) = load_track_artwork(&track.path) {
                 album_art.insert(key, Arc::from(art));

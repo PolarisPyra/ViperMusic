@@ -22,7 +22,7 @@ pub fn merge_discovered_tracks(library: &mut Library, discovered: DiscoveredTrac
     existing_paths.extend(library.tracks.iter().map(|track| track.path.clone()));
     for (index, album) in library.albums.iter().enumerate() {
         album_indices
-            .entry(album_key(&album.title, &album.artist))
+            .entry(album_key(&album.title, &album.artist, album.lossless))
             .or_insert(index);
     }
     let mut added_paths = HashSet::new();
@@ -33,8 +33,8 @@ pub fn merge_discovered_tracks(library: &mut Library, discovered: DiscoveredTrac
             continue;
         }
         let track_index = library.tracks.len();
-        let key =
-            (!track.album.trim().is_empty()).then(|| album_key(&track.album, &track.album_artist));
+        let key = (!track.album.trim().is_empty())
+            .then(|| album_key(&track.album, &track.album_artist, track.is_lossless()));
         Arc::make_mut(&mut library.tracks).push(track);
         added_count += 1;
         let Some(key) = key else {

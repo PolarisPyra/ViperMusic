@@ -35,8 +35,23 @@ pub(crate) fn is_smb_path(path: &Path) -> bool {
     path.to_str().is_some_and(|path| path.starts_with("smb://"))
 }
 
-pub(crate) fn album_key(title: &str, artist: &str) -> (String, String) {
-    (normalize_album_key(title), normalize_album_key(artist))
+/// Build the grouping key for an album, keeping lossless and lossy copies of the same album apart.
+///
+/// # Arguments
+///
+/// * `title` - Album title tag.
+/// * `artist` - Album artist tag.
+/// * `lossless` - Whether the album's tracks are lossless.
+///
+/// # Returns
+///
+/// The normalized title, normalized artist, and lossless flag as a map key.
+pub(crate) fn album_key(title: &str, artist: &str, lossless: bool) -> (String, String, bool) {
+    (
+        normalize_album_key(title),
+        normalize_album_key(artist),
+        lossless,
+    )
 }
 
 fn normalize_album_key(value: &str) -> String {
