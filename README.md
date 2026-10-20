@@ -78,6 +78,56 @@ system `libsmbclient` library. Install `libsmbclient-dev` to build and `libsmbcl
 the application (for Debian or Ubuntu, `sudo apt install libsmbclient-dev libsmbclient`).
 SMB1-only servers require insecure legacy protocol support and are not enabled by default.
 
+## Releases
+
+Changelog entries and release notes come from the commit history with
+[git-cliff](https://git-cliff.org/), configured in `cliff.toml`. Each commit is sorted into
+a group by the start of its subject line, and commits that start with `Release`, `Bump`,
+`Merge`, or `Chore` are left out. Words that don't match a group go under **Other**, so write
+commit subjects with a leading verb, for example `Add ...`, `Fix ...`, or `Change ...`.
+
+To cut a release:
+
+1. Preview the notes for the new version. Nothing is written:
+
+   ```sh
+   git cliff --unreleased --tag v0.2.0
+   ```
+
+2. Bump `version` in `Cargo.toml` to match, then build once so `Cargo.lock` updates:
+
+   ```sh
+   cargo check
+   ```
+
+3. Regenerate the changelog. Use a full rewrite rather than `--prepend`, because
+   `CHANGELOG.md` already has an Unreleased section and prepending would duplicate it:
+
+   ```sh
+   git cliff --tag v0.2.0 -o CHANGELOG.md
+   ```
+
+4. Commit the bump and changelog with a subject that git-cliff skips, then tag it:
+
+   ```sh
+   git add Cargo.toml Cargo.lock CHANGELOG.md
+   git commit -m "Release v0.2.0"
+   git tag -a v0.2.0 -m "Viper 0.2.0"
+   git push origin main v0.2.0
+   ```
+
+Pushing the tag starts the **Release AppImage** workflow (`.github/workflows/release-appimage.yml`).
+It builds the AppImage on Ubuntu 22.04, runs `git cliff --latest` to write the release notes
+for the tag, and creates a GitHub release named `Viper v0.2.0` with the AppImage attached.
+Pushes to `main` do not build anything.
+
+To check the build without making a release, run the workflow by hand from the Actions tab
+(**Run workflow**). It produces the AppImage as a downloadable artifact but creates no release.
+
+Don't edit `CHANGELOG.md` by hand, since the next regeneration overwrites it. Tags must start
+with `v` followed by a digit, such as `v0.2.0`, because that is the pattern git-cliff and the
+workflow both look for.
+
 ## Project layout
 
 - `src/app/` creates the window (`bootstrap.rs`), owns application state (`application.rs`), runs each frame (`runtime.rs`), and handles keyboard shortcuts, scanning, and folder watching.
