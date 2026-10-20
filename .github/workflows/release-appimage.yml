@@ -23,6 +23,9 @@ jobs:
       APPIMAGE_EXTRACT_AND_RUN: 1
     steps:
       - uses: actions/checkout@v4
+        with:
+          # git-cliff needs the full history and tags to build release notes.
+          fetch-depth: 0
 
       - name: Install Viper Linux dependencies
         run: |
@@ -57,6 +60,14 @@ jobs:
           name: viper-appimage
           path: ${{ steps.find.outputs.path }}
 
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+          output: release-notes.md
+
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -64,4 +75,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" "${{ steps.find.outputs.path }}" \
             --title "Viper $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file release-notes.md
