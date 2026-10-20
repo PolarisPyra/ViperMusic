@@ -1,5 +1,5 @@
 # git-cliff configuration for CHANGELOG.md.
-# Run `git cliff --unreleased --prepend CHANGELOG.md --tag vX.Y.Z` before tagging a release.
+# Run `git cliff --tag vX.Y.Z -o CHANGELOG.md` before tagging a release (see README, Releases).
 
 [changelog]
 header = """
