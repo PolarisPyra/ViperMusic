@@ -16,7 +16,7 @@ use crate::{
 };
 use eframe::egui;
 
-const MIN_PANEL_WIDTH: f32 = 260.0;
+const MIN_PANEL_WIDTH: f32 = 300.0;
 const MAX_PANEL_WIDTH: f32 = 520.0;
 
 pub(crate) fn show(
@@ -299,7 +299,6 @@ fn draw_album_preferences(ui: &mut egui::Ui, key: &str, settings: &mut Settings)
         egui::vec2(width, 24.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            let row = ui.max_rect();
             ui.spacing_mut().item_spacing.x = 1.0;
             for value in 1..=5 {
                 let (rect, response) =
@@ -346,15 +345,9 @@ fn draw_album_preferences(ui: &mut egui::Ui, key: &str, settings: &mut Settings)
                     changed = true;
                 }
             }
-            let heart = egui::Rect::from_center_size(
-                egui::pos2(row.right() - 15.0, row.center().y),
-                egui::vec2(30.0, 30.0),
-            );
-            let response = ui.interact(
-                heart,
-                ui.id().with("album-favorite-heart"),
-                egui::Sense::click(),
-            );
+            ui.add_space(6.0);
+            let (heart, response) =
+                ui.allocate_exact_size(egui::vec2(30.0, 24.0), egui::Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, favorite, "Favorite")
             });
