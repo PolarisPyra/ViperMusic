@@ -30,10 +30,13 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 md5 = "0.7"
 webbrowser = "1"
 keyring = { version = "4.2", default-features = false, features = ["v1"] }
-tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tray-icon = { version = "0.26.1", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 async-std = "1.13"
+ksni = { version = "0.3.7", features = ["blocking"] }
 futures-lite = "2"
 libc = "0.2"
 mpris-server = "0.10"

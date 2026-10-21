@@ -148,6 +148,22 @@ impl ViperApp {
         self.playback.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Start playback from the tray unless a track is already playing.
+    pub(crate) fn tray_play(&self) {
+        let mut playback = self.playback();
+        if !playback.is_playing() {
+            playback.play_pause(&self.library);
+        }
+    }
+
+    /// Pause playback from the tray unless it is already paused or stopped.
+    pub(crate) fn tray_pause(&self) {
+        let mut playback = self.playback();
+        if playback.is_playing() {
+            playback.toggle_pause();
+        }
+    }
+
     /// Publish the current library to the MPRIS media controls.
     #[cfg(target_os = "linux")]
     pub(super) fn sync_mpris(&self) {

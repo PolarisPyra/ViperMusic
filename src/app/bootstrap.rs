@@ -106,6 +106,8 @@ impl eframe::App for AppWindow {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
+                TrayEvent::Play => app.tray_play(),
+                TrayEvent::Pause => app.tray_pause(),
                 TrayEvent::Quit => {
                     app.workbench.quit_requested = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -224,6 +226,8 @@ pub fn run() -> eframe::Result<()> {
         loop {
             match tray_events.recv_timeout(Duration::from_millis(50)) {
                 Ok(TrayEvent::Show) => break,
+                Ok(TrayEvent::Play) => app.borrow().tray_play(),
+                Ok(TrayEvent::Pause) => app.borrow().tray_pause(),
                 Ok(TrayEvent::Quit) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
                 Err(RecvTimeoutError::Timeout) => app.borrow_mut().tick_in_background(&idle_ctx),
             }

@@ -2449,16 +2449,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf"
 dependencies = [
  "arc-swap",
- "async-executor",
- "async-io",
- "async-lock",
  "crossbeam-queue",
- "futures-channel",
- "futures-lite",
  "futures-util",
  "pastey",
  "serde",
- "task-local",
+ "tokio",
  "zbus",
 ]
 
@@ -4728,15 +4723,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "task-local"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2972044a9e5e448a506a7ff6f0d03b566d8ef4cd6918a58fc59835a0f8666626"
-dependencies = [
- "pin-project-lite",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4829,8 +4815,22 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
+ "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4968,7 +4968,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f5cc5858ecf9574ddd8f0032a2ff7ffd6f7724d2b81e48b9374984b3fd6ddc9"
 dependencies = [
  "crossbeam-channel",
- "ksni",
  "muda",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -5149,6 +5148,7 @@ dependencies = [
  "futures-lite",
  "image",
  "keyring",
+ "ksni",
  "libc",
  "lofty",
  "md5",
@@ -6161,6 +6161,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid 1.27.0",
