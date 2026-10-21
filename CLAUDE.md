@@ -12,7 +12,7 @@ Scope: this repo only (Viper Music). A bump or release request never covers the 
 4. Afterwards check `gh run list` and `gh release view vX.Y.Z`, and report what was built.
 
 Notes:
-- `git-cliff` lives in `~/.cargo/bin`, which this shell does not load. Prefix commands with `export PATH="$HOME/.cargo/bin:$PATH"`.
+- `git-cliff` lives in `~/.cargo/bin`, which `~/.zshenv` puts on PATH for `/usr/bin/zsh`. The agent's Bash tool runs `/usr/bin/zsh` but its environment does not include that PATH, so `command -v git-cliff` fails there. Prefix commands in that tool with `export PATH="$HOME/.cargo/bin:$PATH"`.
 - Pushing a tag starts the Release AppImage workflow. Never move or force-push an existing tag. If the tag already exists, stop and ask.
 - Only one Release AppImage run should exist per tag. If an older run for the same tag is still going, cancel it with `gh run cancel <id>` before the newer run creates the release.
 - Do not edit `CHANGELOG.md` by hand; it is generated from commit subjects, so write subjects as "Add ...", "Fix ...", or "Change ...".
