@@ -42,31 +42,27 @@ Preferences let you choose your music folder and startup page. Preferences and a
 Build a distributable AppImage for x86_64 Linux:
 
 ```sh
-./packaging/build-appimage.sh
+scripts/build.sh appimage
 ```
 
-The output is written to `target/appimage/`. The first run downloads linuxdeploy into
-`~/.cache/viper/appimage-tools/`; subsequent runs reuse it. Build on the oldest Linux
-distribution you intend to support for the best compatibility with older systems.
+The output is `target/appimage/Viper-Music-x86_64.AppImage`, under the same name for every
+version. The first run downloads linuxdeploy into `~/.cache/viper/appimage-tools/`; subsequent
+runs reuse it. Build on the oldest Linux distribution you intend to support for the best
+compatibility with older systems.
 
-## Install on Arch Linux
+## Install locally
 
-From a checkout of this repository, install Viper with:
+From a checkout of this repository, install Viper for your user with:
 
 ```sh
-./packaging/packenger.sh install
+scripts/build.sh install
 ```
 
-The command builds the release binary and installs Viper under `/usr/bin`, with its
-application menu entry and icon in the standard hicolor theme. Cargo and the native
-build/runtime dependencies must already be installed. It uses `sudo` when needed; you
-can also run it as root.
-
-To remove the installed application files later, run:
-
-```sh
-./packaging/packenger.sh uninstall
-```
+The command builds the release binary and installs it under `~/.local` (`bin/viper`, the hicolor
+icon, and `share/applications/viper.desktop`). Set `PREFIX` to install somewhere else. Cargo and
+the native build/runtime dependencies must already be installed. The script reports whether the
+launcher is new, up to date, or stale and rewritten, and refreshes the desktop, icon, and KDE
+caches so the menu picks it up. Settings and music files are not touched.
 
 ## Samba / SMB libraries
 
@@ -89,30 +85,16 @@ commit subjects with a leading verb, for example `Add ...`, `Fix ...`, or `Chang
 The tag sets the app version, so you never bump `Cargo.toml` by hand. The version in the repo
 stays at `0.1.0` as a placeholder, which means a local build reports that version.
 
-To cut a release:
+To cut a release, run the script from a clean `main` that is up to date with `origin/main`:
 
-1. Preview the notes for the new version. Nothing is written:
+```sh
+scripts/release.sh 0.2.0
+```
 
-   ```sh
-   git cliff --unreleased --tag v0.2.0
-   ```
-
-2. Regenerate the changelog. Use a full rewrite rather than `--prepend`, because
-   `CHANGELOG.md` already has an Unreleased section and prepending would duplicate it:
-
-   ```sh
-   git cliff --tag v0.2.0 -o CHANGELOG.md
-   ```
-
-3. Commit the changelog, then tag and push. The release commit's subject is skipped by git-cliff,
-   so it doesn't appear in the notes:
-
-   ```sh
-   git add CHANGELOG.md
-   git commit -m "Release v0.2.0"
-   git tag -a v0.2.0 -m "Viper 0.2.0"
-   git push origin main v0.2.0
-   ```
+The script checks the version and the repo state, runs Clippy, and prints the release notes for
+the new version. After you confirm, it regenerates `CHANGELOG.md` with a full rewrite (not
+`--prepend`, because the file already has an Unreleased section), commits it as `Release v0.2.0`,
+creates the annotated tag, and pushes `main` and the tag. Nothing is written until you confirm.
 
 Pushing the tag starts the **Release AppImage** workflow (`.github/workflows/release-appimage.yml`).
 Before it builds, the workflow writes the tag's version (`0.2.0`) into `Cargo.toml`. It then

@@ -53,7 +53,7 @@ jobs:
           sed -i "0,/^version = /{s/^version = .*/version = \"$version\"/}" Cargo.toml
 
       - name: Build AppImage
-        run: ./packaging/build-appimage.sh
+        run: scripts/build.sh appimage
 
       - name: Find AppImage
         id: find
