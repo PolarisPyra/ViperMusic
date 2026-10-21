@@ -80,5 +80,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" "${{ steps.find.outputs.path }}" \
-            --title "Viper $GITHUB_REF_NAME" \
+            --title "Viper Music $GITHUB_REF_NAME" \
             --notes-file release-notes.md
