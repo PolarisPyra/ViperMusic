@@ -27,6 +27,8 @@ pub(crate) struct WorkbenchState {
     pub(crate) show_album_details: bool,
     pub(crate) show_queue: bool,
     pub(crate) show_shortcuts: bool,
+    /// Set when the user asks to exit, so closing the window does not just hide it to the tray.
+    pub(crate) quit_requested: bool,
 }
 
 impl WorkbenchState {
@@ -37,6 +39,7 @@ impl WorkbenchState {
             show_album_details: false,
             show_queue: false,
             show_shortcuts: false,
+            quit_requested: false,
         }
     }
 

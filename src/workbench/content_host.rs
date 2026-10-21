@@ -2,10 +2,10 @@ use super::{Page, WorkbenchContext};
 use crate::{features, shared::action::AppAction};
 use eframe::egui;
 
-pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> Option<AppAction> {
+pub(crate) fn show(ui: &mut egui::Ui, context: &mut WorkbenchContext<'_>) -> Option<AppAction> {
     match context.state.page {
         Page::Home => features::home::show(
-            ctx,
+            ui,
             context.state,
             context.library,
             context.playback,
@@ -14,7 +14,7 @@ pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> O
         ),
         Page::Albums => {
             features::albums::track_list::show(
-                ctx,
+                ui,
                 context.library,
                 context.playback,
                 context.lyrics,
@@ -23,7 +23,7 @@ pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> O
                 context.toasts,
             );
             features::albums::show(
-                ctx,
+                ui,
                 features::albums::AlbumScreen {
                     workbench: context.state,
                     library: context.library,
@@ -37,7 +37,7 @@ pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> O
         }
         Page::Songs => {
             features::songs::show(
-                ctx,
+                ui,
                 context.state,
                 context.library,
                 context.playback,

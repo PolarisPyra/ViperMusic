@@ -18,7 +18,7 @@ const PANEL_HEIGHT: f32 = 112.0;
 const TRACK_ART_SIZE: f32 = 68.0;
 
 pub(in crate::workbench) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     workbench: &mut WorkbenchState,
     playback: &mut Playback,
     library: &mut LibraryFeature,
@@ -26,15 +26,16 @@ pub(in crate::workbench) fn show(
     artwork_cache: &mut ArtworkCache,
     toasts: &mut Toasts,
 ) {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
-    egui::TopBottomPanel::bottom("scrubber-controls")
-        .exact_height(PANEL_HEIGHT)
+    egui::Panel::bottom("scrubber-controls")
+        .exact_size(PANEL_HEIGHT)
         .frame(
             egui::Frame::new()
                 .fill(colors.panel)
                 .inner_margin(egui::Margin::symmetric(24, 8)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let current = playback.current;
             let previous_enabled = current.is_some() || playback.has_history();
             let next_enabled = playback.has_next();

@@ -67,6 +67,11 @@ impl ViperApp {
         );
     }
 
+    /// Keep playback, scrobbling, and presence running while the window is closed to the tray.
+    pub(crate) fn tick_in_background(&mut self, ctx: &egui::Context) {
+        self.update_playback(ctx);
+    }
+
     fn poll_artwork(&mut self, ctx: &egui::Context) {
         let mut updated = false;
         for (album_index, artwork) in self.library.background.poll_artwork(ctx) {
@@ -104,28 +109,34 @@ impl ViperApp {
 }
 
 impl eframe::App for ViperApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.observe_window_size(ctx);
-        crate::shared::ui::theme::apply(ctx, self.settings.theme);
-        self.handle_shortcuts(ctx);
+    // Also runs while the window is minimized or occluded, so playback keeps advancing.
+    // Input is stale then, so anything reading it belongs in `ui`.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.poll_scan() {
             self.artwork_cache.clear();
         }
         self.poll_artwork(ctx);
         self.poll_file_watcher(ctx);
         self.artwork_cache.poll(ctx);
-        self.artwork_cache.begin_frame();
         if self.library.scanning {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.update_playback(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
+        self.observe_window_size(ctx);
+        crate::shared::ui::theme::apply(ctx, self.settings.theme);
+        self.handle_shortcuts(ctx);
+        self.artwork_cache.begin_frame();
 
         let playback_handle = Arc::clone(&self.playback);
         let mut playback = playback_handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let actions = crate::workbench::show(
-            ctx,
+            ui,
             &mut WorkbenchContext {
                 state: &mut self.workbench,
                 library: &mut self.library,

@@ -20,7 +20,7 @@ const MIN_PANEL_WIDTH: f32 = 300.0;
 const MAX_PANEL_WIDTH: f32 = 520.0;
 
 pub(crate) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     library_feature: &mut LibraryFeature,
     playback: &mut Playback,
     lyrics: &mut LyricsFeature,
@@ -28,12 +28,13 @@ pub(crate) fn show(
     artwork_cache: &mut ArtworkCache,
     toasts: &mut Toasts,
 ) {
+    let ctx = &ui.ctx().clone();
     let Some(album_index) = library_feature
         .view
         .selected_album
         .filter(|index| library_feature.model.albums.get(*index).is_some())
     else {
-        side_panel(ctx, settings, toasts, |ui, _, _| show_empty_album(ui));
+        side_panel(ui, settings, toasts, |ui, _, _| show_empty_album(ui));
         return;
     };
 
@@ -48,7 +49,7 @@ pub(crate) fn show(
     let selected_track = &mut library_feature.view.selected_track;
     let scroll_to_selection = std::mem::take(&mut library_feature.view.scroll_to_selection);
 
-    side_panel(ctx, settings, toasts, |ui, settings, toasts| {
+    side_panel(ui, settings, toasts, |ui, settings, toasts| {
         let content = ui.max_rect();
         ui.set_width(content.width());
         ui.set_min_height(content.height());
@@ -103,23 +104,24 @@ pub(crate) fn show(
 
 /// Draw the resizable album side panel and persist its width after a resize.
 fn side_panel(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     settings: &mut Settings,
     toasts: &mut Toasts,
     add_contents: impl FnOnce(&mut egui::Ui, &mut Settings, &mut Toasts),
 ) {
     const PANEL_ID: &str = "album-tracklist-side-panel";
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
-    let output = egui::SidePanel::right(PANEL_ID)
+    let output = egui::Panel::right(PANEL_ID)
         .resizable(true)
-        .width_range(MIN_PANEL_WIDTH..=MAX_PANEL_WIDTH)
-        .default_width(
+        .size_range(MIN_PANEL_WIDTH..=MAX_PANEL_WIDTH)
+        .default_size(
             settings
                 .right_panel_width
                 .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH),
         )
         .frame(egui::Frame::new().fill(colors.panel).inner_margin(0))
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let rect = ui.max_rect();
             ui.painter().line_segment(
                 [rect.left_top(), rect.left_bottom()],
@@ -458,10 +460,15 @@ fn show_tracks(
         |ui| {
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("album-popout-tracks")
-                .drag_to_scroll(false)
-                .enable_scrolling(
-                    pointer_inside && !crate::features::lyrics::panel::is_resizing(ctx),
-                )
+                .scroll_source({
+                    let enabled =
+                        pointer_inside && !crate::features::lyrics::panel::is_resizing(ctx);
+                    egui::scroll_area::ScrollSource {
+                        scroll_bar: enabled,
+                        drag: egui::scroll_area::DragScroll::Never,
+                        mouse_wheel: enabled,
+                    }
+                })
                 .max_height(track_list_height);
             if let Some(position) = rows
                 .selected_track

@@ -268,7 +268,7 @@ impl ViperApp {
 
     /// Track the window size in memory; it is persisted once when the application exits.
     pub(super) fn observe_window_size(&mut self, ctx: &egui::Context) {
-        let size = ctx.input(|input| input.screen_rect.size());
+        let size = ctx.input(|input| input.viewport_rect().size());
         if size.x.is_finite() && size.y.is_finite() && size.x >= 760.0 && size.y >= 520.0 {
             self.settings.window_size = Some([size.x.round(), size.y.round()]);
         }

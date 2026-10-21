@@ -57,13 +57,14 @@ fn home_action_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 }
 
 pub(crate) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     workbench: &mut WorkbenchState,
     library: &mut LibraryFeature,
     playback: &mut Playback,
     settings: &mut Settings,
     artwork_cache: &mut ArtworkCache,
 ) -> Option<AppAction> {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
     let mut view = HomeView {
         workbench,
@@ -79,7 +80,7 @@ pub(crate) fn show(
                 .fill(colors.canvas)
                 .inner_margin(egui::Margin::symmetric(24, 0)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("home-content")
                 .auto_shrink([false, false])
@@ -528,7 +529,7 @@ fn album_card(ui: &mut egui::Ui, ctx: &egui::Context, view: &mut HomeView<'_>, i
             color,
         );
         job.wrap = egui::text::TextWrapping::truncate_at_width(CARD_ART);
-        let galley = ui.fonts(|fonts| fonts.layout_job(job));
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
         ui.painter()
             .galley(rect.min + egui::vec2(0.0, y), galley, color);
     }

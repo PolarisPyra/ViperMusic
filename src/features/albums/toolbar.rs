@@ -6,20 +6,21 @@ use crate::{
 use eframe::egui;
 
 pub(crate) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     settings: &mut Settings,
     library_view: &mut LibraryViewState,
     toasts: &mut Toasts,
 ) {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
-    egui::TopBottomPanel::top("view-toolbar")
-        .exact_height(48.0)
+    egui::Panel::top("view-toolbar")
+        .exact_size(48.0)
         .frame(
             egui::Frame::new()
                 .fill(colors.canvas)
                 .inner_margin(egui::Margin::symmetric(20, 8)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             crate::shared::ui::theme::style_dropdown(ui);
             ui.spacing_mut().menu_margin = egui::Margin::same(8);
             ui.spacing_mut().interact_size.y = 32.0;
@@ -38,18 +39,21 @@ pub(crate) fn show(
                 });
                 paint_sort_dropdown(ui, sort_rect, &sort_response, active.label(), popup_id);
                 if sort_response.clicked() {
-                    ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+                    egui::Popup::toggle_id(ui.ctx(), popup_id);
                 }
                 let popup_anchor = egui::Response {
                     rect: sort_response.rect.translate(egui::vec2(0.0, 6.0)),
                     ..sort_response.clone()
                 };
-                egui::popup_below_widget(
-                    ui,
-                    popup_id,
-                    &popup_anchor,
-                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                    |popup_ui| {
+                egui::Popup::from_response(&popup_anchor)
+                    .id(popup_id)
+                    .open_memory(None)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .layout(egui::Layout::top_down_justified(egui::Align::LEFT))
+                    .align(egui::RectAlign::BOTTOM_START)
+                    .width(popup_anchor.rect.width())
+                    .show(|popup_ui| {
+                        popup_ui.set_min_width(popup_ui.available_width());
                         crate::shared::ui::theme::style_menu_contents(popup_ui, sort_rect.width());
                         for sort in AlbumSort::ALL {
                             if popup_ui
@@ -60,11 +64,10 @@ pub(crate) fn show(
                                 .clicked()
                             {
                                 changed = Some(sort);
-                                popup_ui.memory_mut(|memory| memory.close_popup());
+                                egui::Popup::close_id(popup_ui.ctx(), popup_id);
                             }
                         }
-                    },
-                );
+                    });
                 if let Some(sort) = changed {
                     if settings.album_sort != sort {
                         settings.album_sort = sort;
@@ -139,7 +142,7 @@ fn paint_sort_dropdown(
     popup_id: egui::Id,
 ) {
     let colors = theme::colors(ui.ctx());
-    let open = ui.memory(|memory| memory.is_popup_open(popup_id));
+    let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
     let fill = if open || response.hovered() {
         colors.hover
     } else {

@@ -13,7 +13,7 @@ impl ViperApp {
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let consume = |modifiers, key| ctx.input_mut(|input| input.consume_key(modifiers, key));
         let workbench = &mut self.workbench;
-        let popup_open = ctx.memory(|memory| memory.any_popup_open());
+        let popup_open = egui::Popup::is_any_open(ctx);
         if !workbench.show_preferences
             && (popup_open
                 || workbench.show_queue
@@ -22,7 +22,7 @@ impl ViperApp {
             && consume(Modifiers::NONE, Key::Escape)
         {
             if popup_open {
-                ctx.memory_mut(|memory| memory.close_popup());
+                egui::Popup::close_all(ctx);
             } else if workbench.show_shortcuts {
                 workbench.show_shortcuts = false;
             } else if workbench.show_queue {
@@ -31,7 +31,7 @@ impl ViperApp {
                 workbench.show_album_details = false;
             }
         }
-        if workbench.show_preferences || ctx.wants_keyboard_input() {
+        if workbench.show_preferences || ctx.egui_wants_keyboard_input() {
             return;
         }
         if !workbench.show_shortcuts {

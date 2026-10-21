@@ -12,22 +12,23 @@ use crate::{
 use eframe::egui;
 
 pub(in crate::workbench) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     workbench: &mut WorkbenchState,
     library: &LibraryFeature,
     playback: &mut Playback,
 ) -> Option<AppAction> {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
     let mut action = None;
     // Menu popups read the context style, so apply menu visuals for this panel only.
-    let original_style = ctx.style();
+    let original_style = ctx.global_style();
     let mut menu_style = (*original_style).clone();
     menu_style.spacing.menu_spacing = 6.0;
     style_menu_visuals(&mut menu_style.visuals, colors);
-    ctx.set_style(menu_style);
+    ctx.set_global_style(menu_style);
 
-    egui::TopBottomPanel::top("app-menu-bar")
-        .exact_height(34.0)
+    egui::Panel::top("app-menu-bar")
+        .exact_size(34.0)
         .frame(
             egui::Frame::new()
                 .fill(colors.canvas)
@@ -38,7 +39,7 @@ pub(in crate::workbench) fn show(
                     bottom: 2,
                 }),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let menu_size = ui.available_size();
             ui.allocate_ui_with_layout(
                 menu_size,
@@ -80,12 +81,13 @@ pub(in crate::workbench) fn show(
                                 style_menu_popup(ui);
                                 if menu_item(ui, "Preferences").clicked() {
                                     workbench.show_preferences = true;
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if menu_item(ui, "Quit").clicked() {
+                                    workbench.quit_requested = true;
                                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             },
                         );
@@ -98,7 +100,7 @@ pub(in crate::workbench) fn show(
                                 ui.menu_button("Add Library", |ui| {
                                     style_menu_popup(ui);
                                     if menu_item(ui, "Choose Music Folder").clicked() {
-                                        ui.close_menu();
+                                        ui.close();
                                         action = Some(AppAction::ChooseMusicFolder);
                                     }
                                 });
@@ -112,7 +114,7 @@ pub(in crate::workbench) fn show(
                                 style_menu_popup(ui);
                                 if menu_item(ui, "Show Queue").clicked() {
                                     workbench.show_queue = true;
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 let has_current_track = playback.current.is_some();
                                 let can_play = has_current_track
@@ -156,7 +158,7 @@ pub(in crate::workbench) fn show(
                                         .clicked()
                                     {
                                         workbench.page = page;
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             },
@@ -167,7 +169,7 @@ pub(in crate::workbench) fn show(
                                 style_menu_popup(ui);
                                 if menu_item(ui, "Keyboard Shortcuts").clicked() {
                                     workbench.show_shortcuts = true;
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             },
                         );
@@ -176,7 +178,7 @@ pub(in crate::workbench) fn show(
             );
         });
 
-    ctx.set_style(original_style);
+    ctx.set_global_style(original_style);
     show_shortcuts_popup(ctx, workbench);
     action
 }

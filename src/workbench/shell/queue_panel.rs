@@ -17,11 +17,12 @@ const PANEL_WIDTH: f32 = 340.0;
 /// * `playback` - Queue to display and edit.
 /// * `library` - Tracks referenced by the queue.
 pub(in crate::workbench) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     workbench: &mut WorkbenchState,
     playback: &mut Playback,
     library: &LibraryFeature,
 ) {
+    let ctx = &ui.ctx().clone();
     if !workbench.show_queue {
         return;
     }
@@ -30,16 +31,16 @@ pub(in crate::workbench) fn show(
     let mut clear_requested = false;
     let mut remove = None;
     let mut move_item = None;
-    egui::SidePanel::right("queue-panel")
+    egui::Panel::right("queue-panel")
         .resizable(false)
-        .exact_width(PANEL_WIDTH)
+        .exact_size(PANEL_WIDTH)
         .frame(
             egui::Frame::new()
                 .fill(colors.panel)
                 .stroke(egui::Stroke::new(1.0_f32, colors.border))
                 .inner_margin(egui::Margin::symmetric(16, 16)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let queue = playback.queue();
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {

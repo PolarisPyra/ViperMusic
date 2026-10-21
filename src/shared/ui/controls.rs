@@ -127,11 +127,11 @@ pub(crate) fn menu_entry(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool 
     let clicked = ui
         .add_enabled(
             enabled,
-            egui::SelectableLabel::new(false, egui::RichText::new(label).color(colors.text)),
+            egui::Button::selectable(false, egui::RichText::new(label).color(colors.text)),
         )
         .clicked();
     if clicked {
-        ui.close_menu();
+        ui.close();
     }
     clicked
 }
@@ -220,7 +220,7 @@ pub(crate) fn search_field(ui: &mut egui::Ui, query: &mut String) {
                                 .text_color(colors.text)
                                 .hint_text(egui::RichText::new("Search").color(colors.text))
                                 .desired_width(122.0)
-                                .frame(false),
+                                .frame(egui::Frame::NONE),
                         )
                         .on_hover_text("Search (F)");
                         ui.add_space(4.0);

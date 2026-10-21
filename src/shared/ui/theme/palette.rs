@@ -50,10 +50,10 @@ impl ThemeId {
 
     fn definition(self) -> ThemeDefinition {
         match self {
-            Self::CatppuccinLatte => catppuccin::definition(catppuccin_egui::LATTE),
-            Self::CatppuccinFrappe => catppuccin::definition(catppuccin_egui::FRAPPE),
-            Self::CatppuccinMacchiato => catppuccin::definition(catppuccin_egui::MACCHIATO),
-            Self::CatppuccinMocha => catppuccin::definition(catppuccin_egui::MOCHA),
+            Self::CatppuccinLatte => catppuccin::definition(catppuccin::Flavor::Latte),
+            Self::CatppuccinFrappe => catppuccin::definition(catppuccin::Flavor::Frappe),
+            Self::CatppuccinMacchiato => catppuccin::definition(catppuccin::Flavor::Macchiato),
+            Self::CatppuccinMocha => catppuccin::definition(catppuccin::Flavor::Mocha),
             Self::RosePine => rose_pine::definition(rose_pine::Variant::Main),
             Self::RosePineMoon => rose_pine::definition(rose_pine::Variant::Moon),
             Self::RosePineDawn => rose_pine::definition(rose_pine::Variant::Dawn),

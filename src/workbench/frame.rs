@@ -10,16 +10,17 @@ use eframe::egui;
 ///
 /// # Returns
 /// Actions requested by the user, to be handled once drawing has finished.
-pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> Vec<AppAction> {
+pub(crate) fn show(ui: &mut egui::Ui, context: &mut WorkbenchContext<'_>) -> Vec<AppAction> {
+    let ctx = &ui.ctx().clone();
     let mut actions = Vec::with_capacity(2);
     actions.extend(shell::menu_bar::show(
-        ctx,
+        ui,
         context.state,
         context.library,
         context.playback,
     ));
     shell::player_bar::show(
-        ctx,
+        ui,
         context.state,
         context.playback,
         context.library,
@@ -27,11 +28,11 @@ pub(crate) fn show(ctx: &egui::Context, context: &mut WorkbenchContext<'_>) -> V
         context.artwork_cache,
         context.toasts,
     );
-    if let Some(error) = shell::sidebar::show(ctx, context.settings, context.state) {
+    if let Some(error) = shell::sidebar::show(ui, context.settings, context.state) {
         context.toasts.push(error);
     }
-    shell::queue_panel::show(ctx, context.state, context.playback, context.library);
-    actions.extend(content_host::show(ctx, context));
+    shell::queue_panel::show(ui, context.state, context.playback, context.library);
+    actions.extend(content_host::show(ui, context));
     actions.extend(crate::features::preferences::show(
         ctx,
         context.state,

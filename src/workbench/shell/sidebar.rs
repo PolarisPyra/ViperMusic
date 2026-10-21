@@ -24,10 +24,11 @@ struct DragStart {
 }
 
 pub(in crate::workbench) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     settings: &mut Settings,
     workbench: &mut WorkbenchState,
 ) -> Option<String> {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
     let mut error = None;
     let panel_id = egui::Id::new("library-sidebar");
@@ -53,15 +54,15 @@ pub(in crate::workbench) fn show(
         resize_state = preferred();
     }
     let panel_width = resize_state.width.clamp(COMPACT_WIDTH, MAX_WIDTH);
-    egui::SidePanel::left(panel_id)
+    egui::Panel::left(panel_id)
         .resizable(false)
-        .exact_width(panel_width)
+        .exact_size(panel_width)
         .frame(
             egui::Frame::new()
                 .fill(colors.sidebar)
                 .inner_margin(egui::Margin::symmetric(8, 10)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Switch the nav layout with the live width so labels do not clip while resizing.
             let compact = resize_state.width < COMPACT_THRESHOLD;
             for page in Page::ALL {
@@ -213,7 +214,7 @@ fn nav_item(
             if let Err(save_error) = settings.save() {
                 error = Some(format!("Could not save settings: {save_error}"));
             }
-            ui.close_menu();
+            ui.close();
         }
         if settings.startup_view == startup_view {
             ui.label(

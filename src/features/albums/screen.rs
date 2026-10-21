@@ -99,18 +99,14 @@ impl AlbumScreen<'_> {
     }
 }
 
-pub(crate) fn show(ctx: &egui::Context, mut screen: AlbumScreen<'_>) {
+pub(crate) fn show(ui: &mut egui::Ui, mut screen: AlbumScreen<'_>) {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
-    toolbar::show(
-        ctx,
-        screen.settings,
-        &mut screen.library.view,
-        screen.toasts,
-    );
+    toolbar::show(ui, screen.settings, &mut screen.library.view, screen.toasts);
     let albums = screen.library.filtered_album_indices(screen.settings);
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(colors.canvas).inner_margin(0))
-        .show(ctx, |ui| show_grid(ctx, ui, &mut screen, &albums));
+        .show(ui, |ui| show_grid(ctx, ui, &mut screen, &albums));
 }
 
 fn show_grid(
@@ -139,7 +135,10 @@ fn show_grid(
             AlbumLayout::List => "album-list-scroll",
         })
         .auto_shrink([false, false])
-        .drag_to_scroll(false)
+        .scroll_source(egui::scroll_area::ScrollSource {
+            drag: egui::scroll_area::DragScroll::Never,
+            ..egui::scroll_area::ScrollSource::ALL
+        })
         .scroll_bar_rect(bounds.shrink2(egui::vec2(0.0, 14.0)))
         .show_viewport(ui, |ui, viewport| {
             let width = ui.available_width();

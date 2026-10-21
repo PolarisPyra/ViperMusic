@@ -31,7 +31,7 @@ pub(crate) fn show(
     }
     let mut action = None;
 
-    let screen_size = ctx.screen_rect().size();
+    let screen_size = ctx.content_rect().size();
     let margin = 24.0_f32.min(screen_size.x * 0.05).min(screen_size.y * 0.05);
     let modal_size = egui::vec2(
         (screen_size.x - margin * 2.0).clamp(0.0, 760.0),

@@ -34,23 +34,24 @@ const COLUMN_TEXT_INSET: f32 = 8.0;
 /// * `settings` - Persisted song list column widths, updated by header drags.
 /// * `toasts` - Receives errors from context menu actions and saving column widths.
 pub(crate) fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     workbench: &mut WorkbenchState,
     library: &mut LibraryFeature,
     playback: &mut Playback,
     settings: &mut Settings,
     toasts: &mut Toasts,
 ) {
+    let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
     let songs = library.filtered_song_indices();
-    egui::TopBottomPanel::top("songs-toolbar")
-        .exact_height(48.0)
+    egui::Panel::top("songs-toolbar")
+        .exact_size(48.0)
         .frame(
             egui::Frame::new()
                 .fill(colors.canvas)
                 .inner_margin(egui::Margin::symmetric(20, 8)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(format!(
@@ -74,7 +75,7 @@ pub(crate) fn show(
                 .fill(colors.canvas)
                 .inner_margin(egui::Margin::symmetric(12, 0)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             if songs.is_empty() {
                 ui.add_space(70.0);
                 ui.centered_and_justified(|ui| {
