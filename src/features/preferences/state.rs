@@ -1,5 +1,7 @@
 pub(crate) struct PreferencesState {
     pub(crate) category: Option<super::screen::Category>,
+    /// Preview textures for the app logo picker, filled the first time it is shown.
+    pub(crate) logo_thumbnails: Vec<eframe::egui::TextureHandle>,
     pub(crate) discord_application_id_draft: String,
     pub(crate) lastfm_api_key_draft: String,
     pub(crate) lastfm_api_secret_draft: String,
@@ -21,6 +23,7 @@ impl PreferencesState {
     ) -> Self {
         Self {
             category: None,
+            logo_thumbnails: Vec::new(),
             discord_application_id_draft,
             lastfm_api_key_draft,
             lastfm_api_secret_draft,

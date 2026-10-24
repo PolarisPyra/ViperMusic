@@ -1,0 +1,341 @@
+{
+  "default": "flare",
+  "icons": [
+    {
+      "id": "original",
+      "name": "Original",
+      "group": "Soft",
+      "colors": {
+        "top": "#FFB86B",
+        "body": "#FF7EB3",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "original.svg",
+      "png": "original.png"
+    },
+    {
+      "id": "ocean",
+      "name": "Ocean",
+      "group": "Soft",
+      "colors": {
+        "top": "#FFE66D",
+        "body": "#5BC0EB",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "ocean.svg",
+      "png": "ocean.png"
+    },
+    {
+      "id": "berry",
+      "name": "Berry",
+      "group": "Soft",
+      "colors": {
+        "top": "#FF7EB3",
+        "body": "#9B5DE5",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "berry.svg",
+      "png": "berry.png"
+    },
+    {
+      "id": "citrus",
+      "name": "Citrus",
+      "group": "Soft",
+      "colors": {
+        "top": "#FFE66D",
+        "body": "#7BE495",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "citrus.svg",
+      "png": "citrus.png"
+    },
+    {
+      "id": "electric",
+      "name": "Electric",
+      "group": "Bright",
+      "colors": {
+        "top": "#FFD60A",
+        "body": "#FF3D8B",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "electric.svg",
+      "png": "electric.png"
+    },
+    {
+      "id": "tropic",
+      "name": "Tropic",
+      "group": "Bright",
+      "colors": {
+        "top": "#A3E635",
+        "body": "#22C7F0",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "tropic.svg",
+      "png": "tropic.png"
+    },
+    {
+      "id": "popsicle",
+      "name": "Popsicle",
+      "group": "Bright",
+      "colors": {
+        "top": "#FF7A1A",
+        "body": "#E83CF0",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "popsicle.svg",
+      "png": "popsicle.png"
+    },
+    {
+      "id": "arcade",
+      "name": "Arcade",
+      "group": "Bright",
+      "colors": {
+        "top": "#22C7F0",
+        "body": "#8B3DFF",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "arcade.svg",
+      "png": "arcade.png"
+    },
+    {
+      "id": "zest",
+      "name": "Zest",
+      "group": "Bright",
+      "colors": {
+        "top": "#FFD60A",
+        "body": "#FF7A1A",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "zest.svg",
+      "png": "zest.png"
+    },
+    {
+      "id": "coral-reef",
+      "name": "Coral Reef",
+      "group": "Bright",
+      "colors": {
+        "top": "#2EE6A6",
+        "body": "#FF5A5F",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "coral-reef.svg",
+      "png": "coral-reef.png"
+    },
+    {
+      "id": "flare",
+      "name": "Flare",
+      "group": "Bright",
+      "colors": {
+        "top": "#E83CF0",
+        "body": "#3D7BFF",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "flare.svg",
+      "png": "flare.png"
+    },
+    {
+      "id": "rave",
+      "name": "Rave",
+      "group": "Special",
+      "colors": {
+        "top": "#FF3D8B",
+        "body": "#2D3047",
+        "window": "#454866",
+        "leftReel": "#FFD60A",
+        "rightReel": "#22C7F0"
+      },
+      "svg": "rave.svg",
+      "png": "rave.png"
+    },
+    {
+      "id": "bubblegum",
+      "name": "Bubblegum",
+      "group": "Bright",
+      "colors": {
+        "top": "#22C7F0",
+        "body": "#FF3D8B",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "bubblegum.svg",
+      "png": "bubblegum.png"
+    },
+    {
+      "id": "grape-soda",
+      "name": "Grape Soda",
+      "group": "Bright",
+      "colors": {
+        "top": "#A3E635",
+        "body": "#8B3DFF",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "grape-soda.svg",
+      "png": "grape-soda.png"
+    },
+    {
+      "id": "mango",
+      "name": "Mango",
+      "group": "Bright",
+      "colors": {
+        "top": "#FF3D8B",
+        "body": "#FF7A1A",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "mango.svg",
+      "png": "mango.png"
+    },
+    {
+      "id": "lagoon",
+      "name": "Lagoon",
+      "group": "Bright",
+      "colors": {
+        "top": "#FFD60A",
+        "body": "#2EE6A6",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "lagoon.svg",
+      "png": "lagoon.png"
+    },
+    {
+      "id": "ultraviolet",
+      "name": "Ultraviolet",
+      "group": "Bright",
+      "colors": {
+        "top": "#E83CF0",
+        "body": "#8B3DFF",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "ultraviolet.svg",
+      "png": "ultraviolet.png"
+    },
+    {
+      "id": "sorbet",
+      "name": "Sorbet",
+      "group": "Bright",
+      "colors": {
+        "top": "#FF5A5F",
+        "body": "#FFD60A",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "sorbet.svg",
+      "png": "sorbet.png"
+    },
+    {
+      "id": "deep-sea",
+      "name": "Deep Sea",
+      "group": "Bright",
+      "colors": {
+        "top": "#22C7F0",
+        "body": "#3D7BFF",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "deep-sea.svg",
+      "png": "deep-sea.png"
+    },
+    {
+      "id": "lime-pop",
+      "name": "Lime Pop",
+      "group": "Bright",
+      "colors": {
+        "top": "#3D7BFF",
+        "body": "#A3E635",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "lime-pop.svg",
+      "png": "lime-pop.png"
+    },
+    {
+      "id": "neon-window",
+      "name": "Neon Window",
+      "group": "Special",
+      "colors": {
+        "top": "#8B3DFF",
+        "body": "#FFD60A",
+        "window": "#E83CF0",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "neon-window.svg",
+      "png": "neon-window.png"
+    },
+    {
+      "id": "candy-spools",
+      "name": "Candy Spools",
+      "group": "Special",
+      "colors": {
+        "top": "#FFD60A",
+        "body": "#FF3D8B",
+        "window": "#2D3047",
+        "leftReel": "#22C7F0",
+        "rightReel": "#A3E635"
+      },
+      "svg": "candy-spools.svg",
+      "png": "candy-spools.png"
+    },
+    {
+      "id": "midnight-pop",
+      "name": "Midnight Pop",
+      "group": "Special",
+      "colors": {
+        "top": "#22C7F0",
+        "body": "#2D3047",
+        "window": "#454866",
+        "leftReel": "#FF3D8B",
+        "rightReel": "#FFD60A"
+      },
+      "svg": "midnight-pop.svg",
+      "png": "midnight-pop.png"
+    },
+    {
+      "id": "snow",
+      "name": "Snow",
+      "group": "Special",
+      "colors": {
+        "top": "#FF3D8B",
+        "body": "#F4F5F8",
+        "window": "#2D3047",
+        "leftReel": "#FFFFFF",
+        "rightReel": "#FFFFFF"
+      },
+      "svg": "snow.svg",
+      "png": "snow.png"
+    }
+  ]
+}

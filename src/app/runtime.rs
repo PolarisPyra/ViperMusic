@@ -72,6 +72,29 @@ impl ViperApp {
         self.update_playback(ctx);
     }
 
+    /// Apply the selected color way to the window and tray icons when it has changed.
+    fn sync_logo(&mut self, ctx: &egui::Context) {
+        let colorway = self.settings.logo;
+        if self.applied_logo == Some(colorway) {
+            return;
+        }
+        self.applied_logo = Some(colorway);
+        let logo = colorway.decode();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
+            crate::shared::logo::window_icon(&logo),
+        ))));
+        if let Some(tray) = &self.tray {
+            if let Err(error) = tray.set_logo(&logo) {
+                eprintln!("System tray icon could not change: {error}");
+            }
+        }
+        // Also runs at startup, so a reinstall that reset the launcher icon gets the choice back.
+        #[cfg(target_os = "linux")]
+        if let Err(error) = crate::shared::logo::install_launcher_icon(colorway) {
+            eprintln!("Launcher icon could not change: {error}");
+        }
+    }
+
     fn poll_artwork(&mut self, ctx: &egui::Context) {
         let mut updated = false;
         for (album_index, artwork) in self.library.background.poll_artwork(ctx) {
@@ -116,6 +139,7 @@ impl eframe::App for ViperApp {
             self.artwork_cache.clear();
         }
         self.poll_artwork(ctx);
+        self.sync_logo(ctx);
         self.poll_file_watcher(ctx);
         self.artwork_cache.poll(ctx);
         if self.library.scanning {

@@ -13,6 +13,6 @@ mod ksni_backend;
 mod tray_icon_backend;
 
 #[cfg(target_os = "linux")]
-pub(crate) use ksni_backend::create;
+pub(crate) use ksni_backend::{create, Tray};
 #[cfg(not(target_os = "linux"))]
-pub(crate) use tray_icon_backend::create;
+pub(crate) use tray_icon_backend::{create, Tray};

@@ -40,7 +40,7 @@ const LATE_MIGRATIONS: [(i64, &str); 7] = [
 ///
 /// Development builds from other branches may have advanced `user_version` past these steps
 /// with different schema changes, so their presence is checked directly instead of by version.
-const COLUMN_MIGRATIONS: [(&str, &str, &str); 2] = [
+const COLUMN_MIGRATIONS: [(&str, &str, &str); 3] = [
     (
         "app_settings",
         "ui_zoom",
@@ -50,6 +50,11 @@ const COLUMN_MIGRATIONS: [(&str, &str, &str); 2] = [
         "app_settings",
         "song_list_column_widths",
         include_str!("migrations/0018_song_list_column_widths.sql"),
+    ),
+    (
+        "app_settings",
+        "logo",
+        include_str!("migrations/0019_logo.sql"),
     ),
 ];
 

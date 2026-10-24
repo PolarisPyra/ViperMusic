@@ -365,6 +365,8 @@ pub struct Settings {
     pub compact_sidebar: bool,
     /// Selected application color theme.
     pub theme: crate::shared::ui::theme::ThemeId,
+    /// Selected cassette color way for the window and tray icon.
+    pub logo: crate::shared::logo::LogoColorway,
     /// Current right panel width in logical pixels.
     pub right_panel_width: f32,
     /// Playback volume as an integer percentage from 0 to 100.
@@ -415,6 +417,7 @@ impl Default for Settings {
             left_panel_hidden: false,
             compact_sidebar: false,
             theme: Default::default(),
+            logo: Default::default(),
             right_panel_width: 320.0,
             volume: 70,
             album_sort: AlbumSort::Name,
@@ -454,7 +457,7 @@ impl Settings {
                         album_sort, sort_ascending, discord_application_id, album_layout,
                         compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                         gapless_playback, album_list_column_widths, album_format_badges,
-                        lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths
+                        lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo
                  FROM app_settings WHERE id = 1",
                 [],
                 |row| {
@@ -484,6 +487,7 @@ impl Settings {
                         lastfm_scrobbling_enabled: row.get(19)?,
                         ui_zoom: row.get(20)?,
                         song_list_column_widths: json_column(row, 21)?,
+                        logo: json_column(row, 22)?,
                         ..Self::default()
                     })
                 },
@@ -576,9 +580,9 @@ impl Settings {
                     album_sort, sort_ascending, discord_application_id, album_layout,
                     compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                     gapless_playback, album_list_column_widths, album_format_badges,
-                    lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths
+                    lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo
                  ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14,
-                           ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
                  ON CONFLICT(id) DO UPDATE SET
                     music_path=excluded.music_path, window_width=excluded.window_width,
                     window_height=excluded.window_height, startup_view=excluded.startup_view,
@@ -595,7 +599,8 @@ impl Settings {
                     album_format_badges=excluded.album_format_badges,
                     lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled,
                     ui_zoom=excluded.ui_zoom,
-                    song_list_column_widths=excluded.song_list_column_widths",
+                    song_list_column_widths=excluded.song_list_column_widths,
+                    logo=excluded.logo",
                 params![
                     self.music_path
                         .as_deref()
@@ -620,6 +625,7 @@ impl Settings {
                     self.lastfm_scrobbling_enabled,
                     self.ui_zoom,
                     encode_setting(&self.song_list_column_widths)?,
+                    encode_setting(&self.logo)?,
                 ],
             )
             .map(drop)

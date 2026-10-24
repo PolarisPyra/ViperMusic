@@ -18,8 +18,6 @@ use std::{
     time::Duration,
 };
 
-const APP_ICON_PNG: &[u8] = include_bytes!("../../assets/logo.png");
-
 fn load_app_fonts() -> eframe::egui::FontDefinitions {
     use eframe::egui::{FontData, FontDefinitions, FontFamily};
     use font_kit::{family_name::FamilyName, properties::Properties, source::SystemSource};
@@ -148,22 +146,18 @@ pub fn run() -> eframe::Result<()> {
         .filter(|[width, height]| width.is_finite() && height.is_finite())
         .map(|[width, height]| [width.max(760.0), height.max(520.0)])
         .unwrap_or([1440.0, 900.0]);
-    let logo = image::load_from_memory(APP_ICON_PNG).expect("failed to load assets/logo.png");
-    let icon = logo
-        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
-        .into_rgba8();
-    let (icon_width, icon_height) = icon.dimensions();
+    let logo = settings
+        .as_ref()
+        .ok()
+        .map(|settings| settings.logo)
+        .unwrap_or_default()
+        .decode();
     let options = eframe::NativeOptions {
         persist_window: false,
         viewport: egui::ViewportBuilder::default()
             .with_app_id("viper")
             .with_inner_size(window_size)
-            .with_min_inner_size([760.0, 520.0])
-            .with_icon(egui::IconData {
-                rgba: icon.into_raw(),
-                width: icon_width,
-                height: icon_height,
-            }),
+            .with_min_inner_size([760.0, 520.0]),
         ..Default::default()
     };
     let (tray_sender, tray_receiver) = mpsc::channel();
@@ -184,6 +178,7 @@ pub fn run() -> eframe::Result<()> {
     let tray = tray::create(&logo, tray_sender.clone(), wake.clone())
         .inspect_err(|error| eprintln!("System tray unavailable: {error}"))
         .ok();
+    let tray_available = tray.is_some();
     // Launching Viper Music again, such as from the app menu, shows the running window.
     instance::listen(move || {
         let _ = tray_sender.send(TrayEvent::Show);
@@ -191,6 +186,7 @@ pub fn run() -> eframe::Result<()> {
     });
     let tray_events = Rc::new(tray_receiver);
     let app = Rc::new(RefCell::new(ViperApp::with_settings_result(settings)));
+    app.borrow_mut().tray = tray;
     let reopen = Rc::new(Cell::new(false));
     loop {
         eframe::run_native(
@@ -215,6 +211,8 @@ pub fn run() -> eframe::Result<()> {
                     cc.egui_ctx.set_zoom_factor(viper.settings.ui_zoom);
                     // Textures belong to the previous window's context.
                     viper.artwork_cache.clear();
+                    // The window icon belongs to the new window, so it is applied again.
+                    viper.applied_logo = None;
                     drop(viper);
                     Ok(Box::new(AppWindow {
                         app,
@@ -227,7 +225,7 @@ pub fn run() -> eframe::Result<()> {
         if reopen.replace(false) {
             continue;
         }
-        if tray.is_none() || app.borrow().workbench.quit_requested {
+        if !tray_available || app.borrow().workbench.quit_requested {
             return Ok(());
         }
         // Wayland cannot remap a hidden window, so the window is destroyed and recreated on Show.

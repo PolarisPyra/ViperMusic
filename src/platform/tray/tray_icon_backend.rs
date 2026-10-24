@@ -1,3 +1,4 @@
+use image::DynamicImage;
 use std::sync::mpsc::Sender;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
@@ -5,6 +6,37 @@ use tray_icon::{
 };
 
 use super::TrayEvent;
+
+/// Handle to the system tray icon, which stays alive while this value does.
+pub(crate) struct Tray(TrayIcon);
+
+impl Tray {
+    /// Replace the tray icon with `logo`.
+    ///
+    /// # Arguments
+    /// * `logo` - Image shown from now on.
+    ///
+    /// # Errors
+    /// Returns a message if the platform rejects the new icon.
+    pub(crate) fn set_logo(&self, logo: &DynamicImage) -> Result<(), String> {
+        self.0
+            .set_icon(Some(icon(logo)?))
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Convert a logo into the tray icon image.
+///
+/// # Arguments
+/// * `logo` - Source image, scaled down to at most 96 pixels per side.
+///
+/// # Errors
+/// Returns a message if the scaled pixels do not form a valid icon.
+fn icon(logo: &DynamicImage) -> Result<Icon, String> {
+    let icon_image = logo.thumbnail(96, 96).into_rgba8();
+    let (width, height) = icon_image.dimensions();
+    Icon::from_rgba(icon_image.into_raw(), width, height).map_err(|error| error.to_string())
+}
 
 /// Create the system tray icon with Show, Play, Pause, and Quit menu items.
 ///
@@ -16,10 +48,10 @@ use super::TrayEvent;
 /// # Errors
 /// Returns a message if the desktop has no usable system tray.
 pub(crate) fn create(
-    logo: &image::DynamicImage,
+    logo: &DynamicImage,
     sender: Sender<TrayEvent>,
     wake: impl Fn() + Send + Sync + 'static,
-) -> Result<TrayIcon, String> {
+) -> Result<Tray, String> {
     let menu = Menu::new();
     let show_item = MenuItem::new("Show Viper Music", true, None);
     let play_item = MenuItem::new("Play", true, None);
@@ -45,15 +77,11 @@ pub(crate) fn create(
         wake();
     }));
 
-    let icon_image = logo.thumbnail(96, 96).into_rgba8();
-    let (width, height) = icon_image.dimensions();
-    let icon =
-        Icon::from_rgba(icon_image.into_raw(), width, height).map_err(|error| error.to_string())?;
-
     TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Viper Music")
-        .with_icon(icon)
+        .with_icon(icon(logo)?)
         .build()
+        .map(Tray)
         .map_err(|error| error.to_string())
 }

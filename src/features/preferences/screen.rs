@@ -7,6 +7,7 @@ use crate::{
     },
     shared::{
         action::AppAction,
+        logo::LogoColorway,
         ui::{
             controls::{action_button, close_button, connection_text_edit, modal_frame},
             theme::{self, ThemeId},
@@ -86,7 +87,7 @@ pub(crate) fn show(
                             show_connections(ui, preferences, settings, library, &mut action)
                         }
                         Category::View => show_view(ui, settings, &mut action),
-                        Category::Theme => show_theme(ui, settings, &mut action),
+                        Category::Theme => show_theme(ui, preferences, settings, &mut action),
                         Category::Audio => show_audio(ui, settings, &mut action),
                         Category::Services => show_services(
                             ui,
@@ -260,7 +261,12 @@ fn show_general(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<
     }
 }
 
-fn show_theme(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
+fn show_theme(
+    ui: &mut egui::Ui,
+    preferences: &mut PreferencesState,
+    settings: &mut Settings,
+    action: &mut Option<AppAction>,
+) {
     ui.add_space(8.0);
     section_title(ui, "Themes");
     ui.label("Choose a theme for the player.");
@@ -283,6 +289,53 @@ fn show_theme(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<Ap
             }
         }
     });
+    ui.add_space(20.0);
+    section_title(ui, "App logo");
+    ui.label("Choose the cassette color way for the window and tray icon.");
+    ui.add_space(12.0);
+    if preferences.logo_thumbnails.is_empty() {
+        preferences.logo_thumbnails = LogoColorway::ALL
+            .iter()
+            .map(|colorway| {
+                ui.ctx().load_texture(
+                    colorway.label(),
+                    logo_thumbnail(*colorway),
+                    egui::TextureOptions::LINEAR,
+                )
+            })
+            .collect();
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+        for (colorway, texture) in LogoColorway::ALL
+            .into_iter()
+            .zip(&preferences.logo_thumbnails)
+        {
+            let selected = settings.logo == colorway;
+            let image = egui::load::SizedTexture::new(texture.id(), [88.0, 88.0]);
+            if ui
+                .add(egui::Button::image(image).selected(selected))
+                .on_hover_text(colorway.label())
+                .clicked()
+                && !selected
+            {
+                settings.logo = colorway;
+                *action = Some(AppAction::SaveSettings);
+            }
+        }
+    });
+}
+
+/// Decode a color way into the preview image shown in the logo picker.
+///
+/// # Arguments
+/// * `colorway` - Color way to preview.
+fn logo_thumbnail(colorway: LogoColorway) -> egui::ColorImage {
+    let rgba = colorway.decode().thumbnail(176, 176).into_rgba8();
+    egui::ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        rgba.as_raw(),
+    )
 }
 
 fn show_audio(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {

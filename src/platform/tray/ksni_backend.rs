@@ -87,9 +87,27 @@ impl ksni::Tray for LinuxTray {
     }
 }
 
+/// Handle to the StatusNotifierItem tray icon, which stays alive while this value does.
+pub(crate) struct Tray(Handle<LinuxTray>);
+
+impl Tray {
+    /// Replace the tray icon with `logo`.
+    ///
+    /// # Arguments
+    /// * `logo` - Image shown from now on, scaled down to at most 96 pixels per side.
+    ///
+    /// # Errors
+    /// Returns a message if the tray service has stopped.
+    pub(crate) fn set_logo(&self, logo: &DynamicImage) -> Result<(), String> {
+        self.0
+            .update(|tray| tray.icon = vec![argb_icon(logo)])
+            .ok_or_else(|| "tray service has stopped".to_owned())
+    }
+}
+
 /// Create the StatusNotifierItem tray icon with Show, Play, Pause, and Quit menu items.
 ///
-/// The icon is spawned on the D-Bus service thread and stays alive while the returned handle does.
+/// The icon is spawned on the D-Bus service thread and stays alive while the returned tray does.
 ///
 /// # Arguments
 /// * `logo` - Image used for the tray icon.
@@ -102,12 +120,13 @@ pub(crate) fn create(
     logo: &DynamicImage,
     sender: Sender<TrayEvent>,
     wake: impl Fn() + Send + Sync + 'static,
-) -> Result<Handle<LinuxTray>, String> {
+) -> Result<Tray, String> {
     LinuxTray {
         sender,
         wake: Arc::new(wake),
         icon: vec![argb_icon(logo)],
     }
     .spawn()
+    .map(Tray)
     .map_err(|error| error.to_string())
 }

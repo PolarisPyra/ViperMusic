@@ -5,8 +5,13 @@ use crate::{
     features::{
         library::state::LibraryFeature, lyrics::LyricsFeature, preferences::PreferencesState,
     },
-    platform::persistence::settings::{LastFmSettings, Settings, StartupView},
-    shared::{artwork::ArtworkCache, clock::unix_time_seconds, ui::toasts::Toasts},
+    platform::{
+        persistence::settings::{LastFmSettings, Settings, StartupView},
+        tray,
+    },
+    shared::{
+        artwork::ArtworkCache, clock::unix_time_seconds, logo::LogoColorway, ui::toasts::Toasts,
+    },
     workbench::{Page, WorkbenchState},
 };
 use anyhow::Context;
@@ -32,6 +37,10 @@ pub struct ViperApp {
     pub(super) last_observed_track: Option<usize>,
     pub(crate) toasts: Toasts,
     pub(crate) artwork_cache: ArtworkCache,
+    /// System tray icon, absent when the desktop has no usable tray.
+    pub(crate) tray: Option<tray::Tray>,
+    /// Color way last applied to the window and tray icons.
+    pub(super) applied_logo: Option<LogoColorway>,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
     #[cfg(target_os = "linux")]
@@ -114,6 +123,8 @@ impl ViperApp {
             last_observed_track: None,
             toasts: Toasts::default(),
             artwork_cache: ArtworkCache::new(),
+            tray: None,
+            applied_logo: None,
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
                 .as_ref()
