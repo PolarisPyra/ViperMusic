@@ -85,6 +85,9 @@ install_app() {
   echo "Binary: $bin_path"
 
   install -Dm644 assets/logo.png "$icons_dir/512x512/apps/$app_id.png"
+  # Earlier installs wrote smaller sizes of the icon. The shell picks one of those for notifications,
+  # so remove them and let the theme scale the 512px copy.
+  find "$icons_dir" -path "*/apps/$app_id.png" ! -path "$icons_dir/512x512/apps/$app_id.png" -delete
   echo "Icon: $icons_dir/512x512/apps/$app_id.png"
 
   # The launcher's Exec is the absolute binary path, so it goes stale when the prefix or the
