@@ -3,6 +3,7 @@ use crate::{
     platform::{
         instance,
         persistence::settings::Settings,
+        session::DisplaySocket,
         tray::{self, TrayEvent},
     },
 };
@@ -138,6 +139,7 @@ impl eframe::App for AppWindow {
 /// # Errors
 /// Returns an eframe error if native application startup fails.
 pub fn run() -> eframe::Result<()> {
+    let display = DisplaySocket::current();
     let settings = Settings::load();
     let window_size = settings
         .as_ref()
@@ -231,6 +233,11 @@ pub fn run() -> eframe::Result<()> {
         // Wayland cannot remap a hidden window, so the window is destroyed and recreated on Show.
         let idle_ctx = egui::Context::default();
         loop {
+            // Logging out leaves a hidden instance with a dead display connection, which would
+            // block later launches and crash when asked to show its window.
+            if display.is_gone() {
+                return Ok(());
+            }
             match tray_events.recv_timeout(Duration::from_millis(50)) {
                 Ok(TrayEvent::Show) => break,
                 Ok(TrayEvent::Play) => app.borrow().tray_play(),
