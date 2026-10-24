@@ -12,6 +12,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
     sync::{
+        atomic::Ordering,
         mpsc::{self, Receiver, RecvTimeoutError},
         Arc, Mutex, PoisonError,
     },
@@ -115,6 +116,11 @@ impl eframe::App for AppWindow {
             }
         }
         app.logic(ctx, frame);
+        // HACK: see `install_launcher_icon`. The window manager reads the icon only when a window opens.
+        if app.reopen_window.swap(false, Ordering::Relaxed) {
+            self.reopen.set(true);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -146,12 +152,19 @@ pub fn run() -> eframe::Result<()> {
         .filter(|[width, height]| width.is_finite() && height.is_finite())
         .map(|[width, height]| [width.max(760.0), height.max(520.0)])
         .unwrap_or([1440.0, 900.0]);
-    let logo = settings
+    let colorway = settings
         .as_ref()
         .ok()
         .map(|settings| settings.logo)
-        .unwrap_or_default()
-        .decode();
+        .unwrap_or_default();
+    // The window manager reads the launcher icon when the window opens, so update it first.
+    #[cfg(target_os = "linux")]
+    match crate::shared::logo::install_launcher_icon(colorway) {
+        Ok(true) => crate::shared::logo::refresh_launcher_cache(),
+        Ok(false) => {}
+        Err(error) => eprintln!("Launcher icon could not change: {error}"),
+    }
+    let logo = colorway.decode();
     let options = eframe::NativeOptions {
         persist_window: false,
         viewport: egui::ViewportBuilder::default()
@@ -211,6 +224,7 @@ pub fn run() -> eframe::Result<()> {
                     cc.egui_ctx.set_zoom_factor(viper.settings.ui_zoom);
                     // Textures belong to the previous window's context.
                     viper.artwork_cache.clear();
+                    viper.preferences.logo_thumbnails.clear();
                     // The window icon belongs to the new window, so it is applied again.
                     viper.applied_logo = None;
                     drop(viper);

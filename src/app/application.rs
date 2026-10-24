@@ -19,7 +19,10 @@ use eframe::egui;
 use secrecy::ExposeSecret;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc, Mutex, MutexGuard, PoisonError,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -41,6 +44,10 @@ pub struct ViperApp {
     pub(crate) tray: Option<tray::Tray>,
     /// Color way last applied to the window and tray icons.
     pub(super) applied_logo: Option<LogoColorway>,
+    /// Set once the window should be recreated so the desktop shows a changed launcher icon.
+    pub(super) reopen_window: Arc<AtomicBool>,
+    /// Count of launcher icon changes, so only the latest one reopens the window.
+    pub(super) logo_changes: Arc<AtomicU64>,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
     #[cfg(target_os = "linux")]
@@ -125,6 +132,8 @@ impl ViperApp {
             artwork_cache: ArtworkCache::new(),
             tray: None,
             applied_logo: None,
+            reopen_window: Arc::default(),
+            logo_changes: Arc::default(),
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
                 .as_ref()

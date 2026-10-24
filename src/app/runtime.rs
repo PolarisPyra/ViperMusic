@@ -78,6 +78,8 @@ impl ViperApp {
         if self.applied_logo == Some(colorway) {
             return;
         }
+        #[cfg(target_os = "linux")]
+        let changed_while_open = self.applied_logo.is_some();
         self.applied_logo = Some(colorway);
         let logo = colorway.decode();
         ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
@@ -88,10 +90,33 @@ impl ViperApp {
                 eprintln!("System tray icon could not change: {error}");
             }
         }
-        // Also runs at startup, so a reinstall that reset the launcher icon gets the choice back.
         #[cfg(target_os = "linux")]
-        if let Err(error) = crate::shared::logo::install_launcher_icon(colorway) {
-            eprintln!("Launcher icon could not change: {error}");
+        match crate::shared::logo::install_launcher_icon(colorway) {
+            // HACK: see `install_launcher_icon`. The desktop reads the launcher icon when a window
+            // opens, so the window reopens only after the taskbar has loaded the rebuilt application
+            // cache. Plasma's taskbar took about half a second, and keeps the old icon if the window
+            // reopens before then. Only the latest change reopens the window, so a quick series of
+            // picks cannot reopen it while the taskbar is still loading a later one.
+            Ok(true) => {
+                use std::sync::atomic::Ordering;
+
+                let change = self.logo_changes.fetch_add(1, Ordering::Relaxed) + 1;
+                let logo_changes = Arc::clone(&self.logo_changes);
+                let reopen_window = Arc::clone(&self.reopen_window);
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    crate::shared::logo::refresh_launcher_cache();
+                    if changed_while_open {
+                        std::thread::sleep(Duration::from_millis(1500));
+                        if logo_changes.load(Ordering::Relaxed) == change {
+                            reopen_window.store(true, Ordering::Relaxed);
+                            ctx.request_repaint();
+                        }
+                    }
+                });
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("Launcher icon could not change: {error}"),
         }
     }
 

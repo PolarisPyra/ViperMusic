@@ -148,38 +148,110 @@ pub(crate) fn window_icon(logo: &DynamicImage) -> egui::IconData {
     }
 }
 
-/// Replace the installed launcher icon with `colorway`, so the dock and app menu show it.
+/// Point the installed launcher at an icon of `colorway`, so the dock, app menu, and title bar show it.
 ///
-/// Only the installer creates the launcher icon, so runs without one, such as the AppImage, leave
-/// the icon theme alone. Desktops may show the new icon only after the app next starts.
+/// HACK: winit cannot set a Wayland window's icon yet (the `xdg-toplevel-icon` protocol), so the
+/// desktop only learns the icon from the launcher. Once winit supports that protocol, set the icon on
+/// the window instead and remove this function, the window reopen in `AppWindow::logic`, and the
+/// icon handling in `scripts/build.sh`.
+///
+/// Every change installs the icon under a name never used before, because the window manager and
+/// panel keep icons, and failed lookups, cached by name. Reusing a name, such as when switching back
+/// to an earlier pick, would show whatever they cached for it. Only the installer creates the
+/// launcher, so runs without one, such as the AppImage, leave the desktop files alone.
 ///
 /// # Arguments
 /// * `colorway` - Color way to install.
 ///
+/// # Returns
+/// Whether the launcher now names a different icon, which open windows pick up only when reopened.
+///
 /// # Errors
-/// Returns an I/O error if the installed icon cannot be read or replaced.
+/// Returns an I/O error if the launcher or icons cannot be read, written, or removed.
 #[cfg(target_os = "linux")]
-pub(crate) fn install_launcher_icon(colorway: LogoColorway) -> std::io::Result<()> {
-    use std::{env, fs, io, path::PathBuf, time::SystemTime};
+pub(crate) fn install_launcher_icon(colorway: LogoColorway) -> std::io::Result<bool> {
+    use std::{
+        env, fs, io,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     let Some(data_home) = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
     else {
-        return Ok(());
+        return Ok(false);
+    };
+    let launcher = data_home.join("applications/viper.desktop");
+    let entry = match fs::read_to_string(&launcher) {
+        Ok(entry) => entry,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
     };
     let theme = data_home.join("icons/hicolor");
-    let path = theme.join("512x512/apps/viper.png");
-    let png = colorway.png();
-    match fs::read(&path) {
-        Ok(current) if current == png => return Ok(()),
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+    let apps = theme.join("512x512/apps");
+    let id = serde_json::to_value(colorway)?;
+    let prefix = format!("viper-logo-{}-", id.as_str().unwrap_or_default());
+    let current = entry.lines().find_map(|line| line.strip_prefix("Icon="));
+    if let Some(current) = current.filter(|current| current.starts_with(&prefix)) {
+        if fs::read(apps.join(format!("{current}.png")))
+            .ok()
+            .as_deref()
+            == Some(colorway.png())
+        {
+            return Ok(false);
+        }
     }
-    let staged = path.with_extension("png.tmp");
-    fs::write(&staged, png)?;
-    fs::rename(&staged, &path)?;
-    // Icon caches compare the theme directory's modification time to notice changes.
-    fs::File::open(&theme)?.set_modified(SystemTime::now())
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let name = format!("{prefix}{stamp}");
+    let icon = apps.join(format!("{name}.png"));
+    fs::create_dir_all(&apps)?;
+    let staged = icon.with_extension("png.tmp");
+    fs::write(&staged, colorway.png())?;
+    fs::rename(&staged, &icon)?;
+    // Icon caches compare the theme directory's modification time to notice new icons.
+    fs::File::open(&theme)?.set_modified(SystemTime::now())?;
+
+    let icon_line = format!("Icon={name}");
+    let updated: String = entry
+        .lines()
+        .map(|line| {
+            if line.starts_with("Icon=") {
+                icon_line.as_str()
+            } else {
+                line
+            }
+        })
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    let staged = launcher.with_extension("desktop.tmp");
+    fs::write(&staged, updated)?;
+    fs::rename(&staged, &launcher)?;
+
+    // Earlier picks are unused once the launcher names this one.
+    let installed = format!("{name}.png");
+    for file in fs::read_dir(&apps)? {
+        let file_name = file?.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.starts_with("viper-logo-") && file_name != installed {
+            match fs::remove_file(apps.join(&*file_name)) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Rebuild KDE's application cache so the taskbar reads the launcher's new icon.
+///
+/// HACK: see [`install_launcher_icon`]. The taskbar looks up a window's icon in this cache when the
+/// window appears, and the desktop otherwise rebuilds it on its own schedule. Blocks until the
+/// rebuild finishes; desktops without the tool skip it.
+#[cfg(target_os = "linux")]
+pub(crate) fn refresh_launcher_cache() {
+    let _ = std::process::Command::new("kbuildsycoca6").output();
 }
