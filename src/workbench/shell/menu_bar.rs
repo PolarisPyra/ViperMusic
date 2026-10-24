@@ -174,6 +174,9 @@ pub(in crate::workbench) fn show(
                             },
                         );
                     });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        version_chip(ui, colors);
+                    });
                 },
             );
         });
@@ -278,6 +281,28 @@ fn style_menu_visuals(visuals: &mut egui::Visuals, colors: Palette) {
     visuals.widgets.open.bg_fill = colors.hover;
     visuals.widgets.open.weak_bg_fill = colors.hover;
     visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+}
+
+/// The running build's version as a small pill at the right end of the menu bar.
+fn version_chip(ui: &mut egui::Ui, colors: Palette) {
+    let galley = ui.painter().layout_no_wrap(
+        concat!("v", env!("CARGO_PKG_VERSION")).to_owned(),
+        egui::FontId::proportional(11.0),
+        colors.muted,
+    );
+    let chip_size = galley.size() + egui::vec2(16.0, 4.0);
+    let (rect, _) = ui.allocate_exact_size(chip_size, egui::Sense::hover());
+    let radius = rect.height() / 2.0;
+    ui.painter()
+        .rect_filled(rect, radius, colors.text.gamma_multiply(0.06));
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, colors.border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, colors.muted);
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> egui::Response {
