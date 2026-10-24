@@ -1,3 +1,5 @@
+<a href="https://github.com/PolarisPyra/ViperMusic/releases/latest"><img align="right" src="https://img.shields.io/github/v/release/PolarisPyra/ViperMusic?label=version" alt="Latest version"></a>
+
 # Viper
 
 ## Why Viper exists
@@ -82,33 +84,50 @@ a group by the start of its subject line, and commits that start with `Release`,
 `Merge`, or `Chore` are left out. Words that don't match a group go under **Other**, so write
 commit subjects with a leading verb, for example `Add ...`, `Fix ...`, or `Change ...`.
 
-The tag sets the app version, so you never bump `Cargo.toml` by hand. The version in the repo
-stays at `0.1.0` as a placeholder, which means a local build reports that version.
+The release script sets the version, so you never edit it in `Cargo.toml` by hand. The version
+in the repo always matches the latest tag.
 
-To cut a release, run the script from a clean `main` that is up to date with `origin/main`:
+### Version numbers
+
+Versions are `MAJOR.MINOR.PATCH` with no leading zeros and no suffixes. Read the current version
+with `git describe --tags --abbrev=0`, then raise one part by one:
+
+- **Patch** for fixes and small changes: `0.5.3` → `0.5.4`.
+- **Minor** for larger features, resetting the patch: `0.5.3` → `0.6.0`.
+- **Major** only for a deliberate major release.
+
+Hotfixes are ordinary patch releases: a hotfix after `0.5.9` is `0.5.10`, not `0.5.91`. Each
+part is compared as a whole number, so `0.5.91` would sort above every release from `0.5.10` to
+`0.5.90` and break release ordering.
+
+### Cutting a release
+
+Run the script from a clean `main` that is up to date with `origin/main`:
 
 ```sh
 scripts/release.sh 0.2.0
 ```
 
 The script checks the version and the repo state, runs Clippy, and prints the release notes for
-the new version. After you confirm, it regenerates `CHANGELOG.md` with a full rewrite (not
-`--prepend`, because the file already has an Unreleased section), commits it as `Release v0.2.0`,
-creates the annotated tag, and pushes `main` and the tag. Nothing is written until you confirm.
+the new version. After you confirm, it writes the version into `Cargo.toml` with
+`scripts/set-version.sh`, updates `Cargo.lock`, regenerates `CHANGELOG.md` with a full rewrite
+(not `--prepend`, because the file already has an Unreleased section), commits them as
+`Release v0.2.0`, creates the annotated tag, and pushes `main` and the tag. Nothing is written
+until you confirm.
 
 Pushing the tag starts the **Release AppImage** workflow (`.github/workflows/release-appimage.yml`).
-Before it builds, the workflow writes the tag's version (`0.2.0`) into `Cargo.toml`. It then
-builds the AppImage on Ubuntu 22.04, runs `git cliff --latest` for the release notes, and creates
-a GitHub release named `Viper v0.2.0` with the AppImage attached. Pushes to `main` do not build
-anything.
+It runs `scripts/set-version.sh` with the tag's version, so a tag pushed without the script still
+builds with its own version. It then builds the AppImage on Ubuntu 22.04, runs `git cliff --latest`
+for the release notes, and creates a GitHub release named `Viper Music v0.2.0` with the AppImage
+attached. Pushes to `main` do not build anything.
 
 To check the build without making a release, run the workflow by hand from the Actions tab
-(**Run workflow**). It builds `Cargo.toml` as it is, so it uses the placeholder version, and
-creates no release.
+(**Run workflow**). It builds with the last released version and creates no release.
 
 Don't edit `CHANGELOG.md` by hand, since the next regeneration overwrites it. Tags must start
 with `v` followed by a digit, such as `v0.2.0`, because that is the pattern git-cliff and the
-workflow both look for.
+workflow both look for. Never reuse, move, or delete a pushed tag; a broken release is followed
+by the next patch release.
 
 ## Project layout
 

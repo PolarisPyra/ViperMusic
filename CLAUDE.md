@@ -6,10 +6,9 @@ Triggers: any request to bump the version (for example "bump to 0.5.2", "bump re
 
 Scope: this repo only (Viper Music). A bump or release request never covers the other Viper repo (vipermixer), even if the request says "both" or "all repos"; that repo gets its own request.
 
-1. Check that `main` is clean and up to date with `origin/main`.
-2. Set `version` in `Cargo.toml` to the new version, then run `cargo build --release` so `Cargo.lock` updates. Commit as `Bump version to X.Y.Z` (the `Bump` prefix keeps it out of the changelog) and push `main`.
-3. Run `scripts/release.sh X.Y.Z`. It regenerates `CHANGELOG.md` with git-cliff, commits `Release vX.Y.Z`, creates the annotated tag, and pushes `main` and the tag. Show the release notes it prints before confirming.
-4. Afterwards check `gh run list` and `gh release view vX.Y.Z`, and report what was built.
+1. Check that `main` is clean and up to date with `origin/main`. Pick the version with the rules in AGENTS.md ("Pushing and releasing").
+2. Run `scripts/release.sh X.Y.Z`. Don't edit `Cargo.toml` first; after confirmation the script writes the version with `scripts/set-version.sh`, updates `Cargo.lock`, regenerates `CHANGELOG.md` with git-cliff, commits `Release vX.Y.Z`, creates the annotated tag, and pushes `main` and the tag. Show the release notes it prints before confirming.
+3. Afterwards check `gh run list` and `gh release view vX.Y.Z`, and report what was built.
 
 Notes:
 - `git-cliff` lives in `~/.cargo/bin`, which `~/.zshenv` puts on PATH for `/usr/bin/zsh`. The agent's Bash tool runs `/usr/bin/zsh` but its environment does not include that PATH, so `command -v git-cliff` fails there. Prefix commands in that tool with `export PATH="$HOME/.cargo/bin:$PATH"`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Cuts a release: checks the repo and the build, regenerates CHANGELOG.md with git-cliff, commits
-# it, tags the version, and pushes both. Pushing the tag starts the Release AppImage workflow,
-# which builds the AppImage and creates the GitHub release.
+# Cuts a release: checks the repo and the build, writes the new version into Cargo.toml,
+# regenerates CHANGELOG.md with git-cliff, commits both, tags the version, and pushes. Pushing the
+# tag starts the Release AppImage workflow, which builds the AppImage and creates the GitHub release.
 #
 # Usage: scripts/release.sh 0.2.0
 set -euo pipefail
@@ -48,13 +48,16 @@ echo "Release notes for $tag:"
 git cliff --config cliff.toml --unreleased --tag "$tag"
 echo
 
-read -r -p "Commit CHANGELOG.md, tag $tag, and push main and the tag to origin? [y/N] " answer
+read -r -p "Set the version to $version, commit it with CHANGELOG.md, tag $tag, and push main and the tag to origin? [y/N] " answer
 if [[ "$answer" != y && "$answer" != Y ]]; then
   die "Release cancelled. Nothing was changed."
 fi
 
+scripts/set-version.sh "$version"
+# Writes the crate's new version into Cargo.lock.
+cargo update --workspace --quiet
 git cliff --config cliff.toml --tag "$tag" --output CHANGELOG.md
-git add CHANGELOG.md
+git add CHANGELOG.md Cargo.toml Cargo.lock
 git commit -m "Release $tag"
 git tag -a "$tag" -m "Viper Music $version"
 git push origin main "$tag"
