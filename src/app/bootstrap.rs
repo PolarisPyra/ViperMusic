@@ -1,6 +1,7 @@
 use crate::{
     app::ViperApp,
     platform::{
+        instance,
         persistence::settings::Settings,
         tray::{self, TrayEvent},
     },
@@ -166,7 +167,7 @@ pub fn run() -> eframe::Result<()> {
     let (tray_sender, tray_receiver) = mpsc::channel();
     // The open window's context, so tray clicks can wake its event loop.
     let window_ctx: Arc<Mutex<Option<egui::Context>>> = Arc::default();
-    let tray = tray::create(&logo, tray_sender, {
+    let wake = {
         let window_ctx = Arc::clone(&window_ctx);
         move || {
             if let Some(ctx) = window_ctx
@@ -177,9 +178,15 @@ pub fn run() -> eframe::Result<()> {
                 ctx.request_repaint();
             }
         }
-    })
-    .inspect_err(|error| eprintln!("System tray unavailable: {error}"))
-    .ok();
+    };
+    let tray = tray::create(&logo, tray_sender.clone(), wake.clone())
+        .inspect_err(|error| eprintln!("System tray unavailable: {error}"))
+        .ok();
+    // Launching Viper Music again, such as from the app menu, shows the running window.
+    instance::listen(move || {
+        let _ = tray_sender.send(TrayEvent::Show);
+        wake();
+    });
     let tray_events = Rc::new(tray_receiver);
     let app = Rc::new(RefCell::new(ViperApp::with_settings_result(settings)));
     let reopen = Rc::new(Cell::new(false));

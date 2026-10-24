@@ -8,3 +8,4 @@ pub(crate) mod shared;
 pub(crate) mod workbench;
 
 pub use app::run;
+pub use platform::instance::show_running as show_running_instance;
