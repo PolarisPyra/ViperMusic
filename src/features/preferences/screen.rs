@@ -670,8 +670,6 @@ fn show_services(
     );
 }
 
-const REPOSITORY_URL: &str = "https://github.com/PolarisPyra/ViperMusic";
-
 fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option<AppAction>) {
     let colors = theme::colors(ui.ctx());
     ui.add_space(8.0);
@@ -701,12 +699,7 @@ fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option
     section_title(ui, "Updates");
     show_updates(ui, update_state, action);
     ui.add_space(20.0);
-    section_title(ui, "Links");
-    ui.hyperlink_to("Source code", REPOSITORY_URL);
-    ui.hyperlink_to("Report a problem", format!("{REPOSITORY_URL}/issues"));
-    ui.add_space(20.0);
     section_title(ui, "Data");
-    ui.label("Preferences and library state are stored in:");
     match Settings::file_path() {
         Ok(path) => {
             let path = path.display().to_string();
@@ -727,14 +720,6 @@ fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option
             ui.label(egui::RichText::new(error.to_string()).color(colors.danger));
         }
     }
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new(
-            "Passwords, API keys, and session tokens are kept in the operating system's credential store.",
-        )
-        .size(12.0)
-        .color(colors.muted),
-    );
 }
 
 /// Where updating stands, and the button that moves it on.
