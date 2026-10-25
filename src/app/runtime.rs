@@ -1,6 +1,7 @@
 use super::application::ViperApp;
 use crate::{
-    features::playback::RepeatMode, shared::action::AppAction, workbench::WorkbenchContext,
+    features::playback::RepeatMode, platform::updates::UpdateAction, shared::action::AppAction,
+    workbench::WorkbenchContext,
 };
 use eframe::egui;
 use std::{sync::Arc, time::Duration};
@@ -152,6 +153,16 @@ impl ViperApp {
             }
             AppAction::FinishLastFmAuth => self.lastfm_service.finish_auth(&self.lastfm_settings),
             AppAction::DisconnectLastFm => self.disconnect_lastfm(),
+            AppAction::CheckForUpdates => self.updater.check_now(),
+            AppAction::RestartToUpdate => self.restart_requested = true,
+        }
+    }
+
+    /// Quit so `main` starts the installed update, when one is installed.
+    fn restart_to_update(&mut self, ctx: &egui::Context) {
+        if self.updater.restart() {
+            self.workbench.quit_requested = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 }
@@ -180,6 +191,7 @@ impl eframe::App for ViperApp {
         self.handle_shortcuts(ctx);
         self.artwork_cache.begin_frame();
 
+        self.preferences.update_state = self.updater.state(ctx);
         let playback_handle = Arc::clone(&self.playback);
         let mut playback = playback_handle
             .lock()
@@ -212,6 +224,16 @@ impl eframe::App for ViperApp {
             self.save_settings();
         }
         self.toasts.show(ctx);
+        match self.updater.show_card(ctx) {
+            Some(UpdateAction::Restart) => self.restart_requested = true,
+            Some(UpdateAction::Download) => {
+                ctx.open_url(egui::OpenUrl::new_tab(crate::platform::updates::RELEASES_URL));
+            }
+            None => {}
+        }
+        if std::mem::take(&mut self.restart_requested) {
+            self.restart_to_update(ctx);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

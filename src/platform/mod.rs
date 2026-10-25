@@ -4,3 +4,4 @@ pub(crate) mod persistence;
 pub(crate) mod presence;
 pub(crate) mod session;
 pub(crate) mod tray;
+pub(crate) mod updates;

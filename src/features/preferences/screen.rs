@@ -4,6 +4,7 @@ use crate::{
     platform::{
         persistence::settings::{LastFmSettings, Settings, StartupView},
         presence::lastfm::LastFmService,
+        updates::{UpdateState, RELEASES_URL},
     },
     shared::{
         action::AppAction,
@@ -97,7 +98,7 @@ pub(crate) fn show(
                             lastfm_settings,
                             &mut action,
                         ),
-                        Category::About => show_about(ui),
+                        Category::About => show_about(ui, &preferences.update_state, &mut action),
                     }
                 });
         });
@@ -671,7 +672,7 @@ fn show_services(
 
 const REPOSITORY_URL: &str = "https://github.com/PolarisPyra/ViperMusic";
 
-fn show_about(ui: &mut egui::Ui) {
+fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option<AppAction>) {
     let colors = theme::colors(ui.ctx());
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -696,6 +697,9 @@ fn show_about(ui: &mut egui::Ui) {
     });
     ui.add_space(12.0);
     ui.label("A fast, album-centric music player for local folders and SMB shares.");
+    ui.add_space(20.0);
+    section_title(ui, "Updates");
+    show_updates(ui, update_state, action);
     ui.add_space(20.0);
     section_title(ui, "Links");
     ui.hyperlink_to("Source code", REPOSITORY_URL);
@@ -731,6 +735,58 @@ fn show_about(ui: &mut egui::Ui) {
         .size(12.0)
         .color(colors.muted),
     );
+}
+
+/// Where updating stands, and the button that moves it on.
+fn show_updates(ui: &mut egui::Ui, state: &UpdateState, action: &mut Option<AppAction>) {
+    let colors = theme::colors(ui.ctx());
+    let (text, failed) = match state {
+        UpdateState::Idle | UpdateState::UpToDate => ("Up to date".to_owned(), false),
+        UpdateState::Checking => ("Checking for updates…".to_owned(), false),
+        UpdateState::Available { version } => (format!("Viper Music {version} is out"), false),
+        UpdateState::Downloading {
+            version,
+            downloaded,
+            total,
+        } => {
+            let progress = total.map_or_else(
+                || format!("{:.1} MB", *downloaded as f64 / f64::from(1 << 20)),
+                |total| format!("{}%", downloaded * 100 / total.max(1)),
+            );
+            (format!("Downloading Viper Music {version} · {progress}"), false)
+        }
+        UpdateState::Ready { version } => {
+            (format!("Viper Music {version} is installed. Restart to use it."), false)
+        }
+        UpdateState::Failed { message } => (message.clone(), true),
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(text)
+                .size(12.0)
+                .color(if failed { colors.danger } else { colors.muted }),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match state {
+            UpdateState::Ready { .. } => {
+                if action_button(ui, "Restart to update", true).clicked() {
+                    *action = Some(AppAction::RestartToUpdate);
+                }
+            }
+            UpdateState::Available { .. } => {
+                if action_button(ui, "Download", true).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(RELEASES_URL));
+                }
+            }
+            UpdateState::Checking | UpdateState::Downloading { .. } => {
+                action_button(ui, "Check for updates", false);
+            }
+            UpdateState::Idle | UpdateState::UpToDate | UpdateState::Failed { .. } => {
+                if action_button(ui, "Check for updates", true).clicked() {
+                    *action = Some(AppAction::CheckForUpdates);
+                }
+            }
+        });
+    });
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {

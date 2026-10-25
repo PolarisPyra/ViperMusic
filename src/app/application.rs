@@ -48,6 +48,10 @@ pub struct ViperApp {
     pub(super) reopen_window: Arc<AtomicBool>,
     /// Count of launcher icon changes, so only the latest one reopens the window.
     pub(super) logo_changes: Arc<AtomicU64>,
+    /// Background update checks and installs.
+    pub(crate) updater: crate::platform::updates::Updater,
+    /// Set by the update card or Preferences; handled once the frame is drawn.
+    pub(super) restart_requested: bool,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
     #[cfg(target_os = "linux")]
@@ -134,6 +138,8 @@ impl ViperApp {
             applied_logo: None,
             reopen_window: Arc::default(),
             logo_changes: Arc::default(),
+            updater: crate::platform::updates::Updater::start(),
+            restart_requested: false,
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
                 .as_ref()

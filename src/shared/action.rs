@@ -17,4 +17,8 @@ pub(crate) enum AppAction {
     FinishLastFmAuth,
     /// Forget the Last.fm session.
     DisconnectLastFm,
+    /// Check GitHub for a newer release now.
+    CheckForUpdates,
+    /// Quit and start the installed update.
+    RestartToUpdate,
 }
