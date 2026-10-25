@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds Viper Music. `appimage` writes Viper-Music-x86_64.AppImage. `install` builds the release
-# binary and installs it under $PREFIX (default ~/.local) with its icon and a launcher.
+# Builds Viper Music. `appimage` writes Viper-Music-x86_64.AppImage. `install` builds the AppImage
+# and installs it as $PREFIX/bin/viper (default ~/.local) with its icon and a launcher. The app
+# updates that file in place from the GitHub releases.
 #
 # Usage: scripts/build.sh appimage | install
 set -euo pipefail
@@ -18,8 +19,8 @@ usage() {
 Usage: scripts/build.sh appimage | install
 
   appimage  Build target/appimage/Viper-Music-x86_64.AppImage
-  install   Build the release binary and install it under $PREFIX (default ~/.local):
-            bin/viper, the icon, and share/applications/viper.desktop
+  install   Build the AppImage and install it under $PREFIX (default ~/.local): bin/viper,
+            the icon, and share/applications/viper.desktop
 EOF
 }
 
@@ -72,17 +73,18 @@ build_appimage() {
 }
 
 install_app() {
-  require_tools cargo
   local prefix="${PREFIX:-$HOME/.local}"
   local bin_path="$prefix/bin/viper"
   local apps_dir="$prefix/share/applications"
   local icons_dir="$prefix/share/icons/hicolor"
   local launcher="$apps_dir/$app_id.desktop"
 
-  cargo build --release
-
-  install -Dm755 target/release/viper "$bin_path"
-  echo "Binary: $bin_path"
+  build_appimage
+  # Moved into place rather than written over, so a running Viper Music keeps its file and the new
+  # version starts the next time it opens. This also replaces an earlier install's bare binary.
+  install -Dm755 target/appimage/Viper-Music-x86_64.AppImage "$bin_path.new"
+  mv -f "$bin_path.new" "$bin_path"
+  echo "AppImage: $bin_path"
 
   install -Dm644 assets/logo.png "$icons_dir/512x512/apps/$app_id.png"
   # Earlier installs wrote smaller sizes of the icon. The shell picks one of those for notifications,

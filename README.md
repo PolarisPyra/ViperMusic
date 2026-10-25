@@ -60,8 +60,10 @@ From a checkout of this repository, install Viper for your user with:
 scripts/build.sh install
 ```
 
-The command builds the release binary and installs it under `~/.local` (`bin/viper`, the hicolor
-icon, and `share/applications/viper.desktop`). Set `PREFIX` to install somewhere else. Cargo and
+The command builds the AppImage and installs it under `~/.local` (`bin/viper`, the hicolor icon,
+and `share/applications/viper.desktop`). Installed this way, or run as a downloaded release
+AppImage, Viper Music checks GitHub for a new release every hour, installs it in place, and offers
+a restart. Set `PREFIX` to install somewhere else. Cargo and
 the native build/runtime dependencies must already be installed. The script reports whether the
 launcher is new, up to date, or stale and rewritten, and refreshes the desktop, icon, and KDE
 caches so the menu picks it up. Settings and music files are not touched.
