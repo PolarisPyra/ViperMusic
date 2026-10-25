@@ -34,7 +34,7 @@ pub(in crate::workbench) fn show(
                 .fill(colors.canvas)
                 .inner_margin(egui::Margin {
                     left: 8,
-                    right: 18,
+                    right: 8,
                     top: 2,
                     bottom: 2,
                 }),
@@ -283,7 +283,7 @@ fn style_menu_visuals(visuals: &mut egui::Visuals, colors: Palette) {
     visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
 }
 
-/// The running build's version as a small pill at the right end of the menu bar.
+/// The running build's version as a small rounded rectangle at the right end of the menu bar.
 fn version_chip(ui: &mut egui::Ui, colors: Palette) {
     let galley = ui.painter().layout_no_wrap(
         concat!("v", env!("CARGO_PKG_VERSION")).to_owned(),
@@ -292,7 +292,7 @@ fn version_chip(ui: &mut egui::Ui, colors: Palette) {
     );
     let chip_size = galley.size() + egui::vec2(16.0, 4.0);
     let (rect, _) = ui.allocate_exact_size(chip_size, egui::Sense::hover());
-    let radius = rect.height() / 2.0;
+    let radius = 4.0;
     ui.painter()
         .rect_filled(rect, radius, colors.text.gamma_multiply(0.06));
     ui.painter().rect_stroke(
