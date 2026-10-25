@@ -726,7 +726,8 @@ fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option
 fn show_updates(ui: &mut egui::Ui, state: &UpdateState, action: &mut Option<AppAction>) {
     let colors = theme::colors(ui.ctx());
     let (text, failed) = match state {
-        UpdateState::Idle | UpdateState::UpToDate => ("Up to date".to_owned(), false),
+        UpdateState::Idle => ("Not checked yet".to_owned(), false),
+        UpdateState::UpToDate => ("Up to date".to_owned(), false),
         UpdateState::Checking => ("Checking for updates…".to_owned(), false),
         UpdateState::Available { version } => (format!("Viper Music {version} is out"), false),
         UpdateState::Downloading {
