@@ -32,6 +32,10 @@ const TICK: Duration = Duration::from_secs(5 * 60);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// A download that has not finished by then has stalled; the next check starts it again.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long the update card takes to fade and slide in, in seconds.
+const CARD_ENTER_SECS: f64 = 0.35;
+/// How far above its place the update card starts, in points.
+const CARD_ENTER_OFFSET: f32 = 10.0;
 
 /// AppImage the app starts again into once it has quit, set by [`Updater::restart`].
 static RESTART_INTO: OnceLock<PathBuf> = OnceLock::new();
@@ -84,6 +88,8 @@ pub(crate) struct Updater {
     shared: Arc<Shared>,
     /// Version whose card the user closed this session.
     dismissed: Option<String>,
+    /// Context time when the card appeared, for its entrance; `None` while it is hidden.
+    card_shown_at: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -186,10 +192,22 @@ impl Updater {
         let (version, action) = match self.state(ctx) {
             UpdateState::Ready { version } => (version, UpdateAction::Restart),
             UpdateState::Available { version } => (version, UpdateAction::Download),
-            _ => return None,
+            _ => {
+                self.card_shown_at = None;
+                return None;
+            }
         };
         if self.dismissed.as_deref() == Some(version.as_str()) {
+            self.card_shown_at = None;
             return None;
+        }
+        // Ease out: quick at first, settling gently into place.
+        let now = ctx.input(|input| input.time);
+        let shown_at = *self.card_shown_at.get_or_insert(now);
+        let progress = ((now - shown_at) / CARD_ENTER_SECS).clamp(0.0, 1.0) as f32;
+        let entered = 1.0 - (1.0 - progress).powi(3);
+        if progress < 1.0 {
+            ctx.request_repaint();
         }
         let ready = action == UpdateAction::Restart;
         let colors = crate::shared::ui::theme::colors(ctx);
@@ -197,8 +215,13 @@ impl Updater {
         let mut dismissed = false;
         egui::Area::new(egui::Id::new("update-card"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 46.0))
+            .fade_in(false)
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-16.0, 46.0 - CARD_ENTER_OFFSET * (1.0 - entered)),
+            )
             .show(ctx, |ui| {
+                ui.multiply_opacity(entered);
                 egui::Frame::new()
                     .fill(colors.surface)
                     .stroke(egui::Stroke::new(1.0_f32, colors.accent))
