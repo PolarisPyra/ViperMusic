@@ -8,10 +8,17 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
-        Arc,
+        Arc, Mutex, PoisonError,
     },
     time::Duration,
 };
+
+/// How often the driver looks for a finished track while a gapless track is being prepared.
+const PREPARING_TICK: Duration = Duration::from_millis(16);
+/// How often the driver looks for a finished track while there is playback work.
+const PLAYING_TICK: Duration = Duration::from_millis(100);
+/// How often the driver wakes with nothing to play; starting playback never waits for it.
+const IDLE_TICK: Duration = Duration::from_millis(250);
 
 struct GaplessPreparation {
     track_index: usize,
@@ -128,11 +135,73 @@ pub struct Playback {
     pub(crate) repeat_mode: RepeatMode,
     /// Playback volume as a percentage from 0 to 100.
     pub volume: u8,
+    /// Library tracks the driver thread starts queued tracks from.
+    tracks: Arc<Vec<Track>>,
+    /// Whether the user turned gapless playback on.
+    gapless: bool,
     #[cfg(target_os = "linux")]
     smb_auth: Option<crate::features::library::smb::SmbAuth>,
 }
 
 impl Playback {
+    /// Start the thread that moves playback on to the next queued track. It runs apart from the
+    /// window, which draws no frames while it is minimized or hidden, so playback keeps going.
+    /// The thread ends once `playback` is dropped.
+    ///
+    /// # Arguments
+    /// * `playback` - Shared playback state to drive.
+    pub(crate) fn spawn_driver(playback: &Arc<Mutex<Self>>) {
+        let playback = Arc::downgrade(playback);
+        let spawned = std::thread::Builder::new()
+            .name("playback-driver".to_owned())
+            .spawn(move || {
+                while let Some(playback) = playback.upgrade() {
+                    let delay = playback
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .tick();
+                    drop(playback);
+                    std::thread::sleep(delay);
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("Playback driver could not start: {error}");
+        }
+    }
+
+    /// Give the driver the current library and gapless setting.
+    ///
+    /// # Arguments
+    /// * `tracks` - Current library tracks, which queued indexes refer to.
+    /// * `gapless` - Whether the user turned gapless playback on.
+    pub(crate) fn sync_library(&mut self, tracks: &Arc<Vec<Track>>, gapless: bool) {
+        if !Arc::ptr_eq(&self.tracks, tracks) {
+            self.tracks = Arc::clone(tracks);
+        }
+        self.gapless = gapless;
+    }
+
+    /// Start the next queued track when the current one has ended, and prepare gapless tracks.
+    ///
+    /// # Returns
+    /// How long the driver waits before the next tick.
+    fn tick(&mut self) -> Duration {
+        if !self.has_playback_work() {
+            return IDLE_TICK;
+        }
+        let tracks = Arc::clone(&self.tracks);
+        if self.is_playing() {
+            self.advance_if_finished(&tracks);
+        }
+        let gapless = self.gapless && self.repeat_mode != RepeatMode::One;
+        self.update_gapless(&tracks, gapless);
+        if self.gapless_preparation.is_some() {
+            PREPARING_TICK
+        } else {
+            PLAYING_TICK
+        }
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn set_smb_auth(&mut self, auth: crate::features::library::smb::SmbAuth) {
         self.smb_auth = Some(auth);
@@ -321,7 +390,7 @@ impl Playback {
     ///
     /// # Arguments
     /// * `tracks` - Current library tracks.
-    pub fn advance_if_finished(&mut self, tracks: &[Track]) {
+    fn advance_if_finished(&mut self, tracks: &[Track]) {
         if self.is_paused() {
             return;
         }
@@ -366,7 +435,7 @@ impl Playback {
     /// # Arguments
     /// * `tracks` - Current library tracks indexed by the playback queue.
     /// * `enabled` - Whether gapless transitions should be active.
-    pub fn update_gapless(&mut self, tracks: &[Track], enabled: bool) {
+    fn update_gapless(&mut self, tracks: &[Track], enabled: bool) {
         if !enabled {
             self.gapless_preparation = None;
             self.clear_scheduled_pending();
@@ -641,11 +710,7 @@ impl Playback {
         self.clear_scheduled_pending();
     }
 
-    pub(crate) fn gapless_preparation_pending(&self) -> bool {
-        self.gapless_preparation.is_some()
-    }
-
-    pub(crate) fn has_playback_work(&self) -> bool {
+    fn has_playback_work(&self) -> bool {
         self.current.is_some() || self.has_next()
     }
 
@@ -748,7 +813,9 @@ impl Playback {
     ///
     /// # Arguments
     /// * `remap` - Old-to-new track index mapping; `None` marks a removed track.
-    pub fn remap_tracks(&mut self, remap: &[Option<usize>]) {
+    /// * `tracks` - The changed library tracks, which the remapped indexes refer to.
+    pub fn remap_tracks(&mut self, remap: &[Option<usize>], tracks: &Arc<Vec<Track>>) {
+        self.tracks = Arc::clone(tracks);
         self.clear_scheduled_pending();
         if let Some(current) = self.current {
             match remap.get(current).copied().flatten() {
@@ -953,6 +1020,8 @@ impl Default for Playback {
             context_tracks: Vec::new(),
             repeat_mode: RepeatMode::Off,
             volume: 70,
+            tracks: Arc::default(),
+            gapless: false,
             #[cfg(target_os = "linux")]
             smb_auth: None,
         }

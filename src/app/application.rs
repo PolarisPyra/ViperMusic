@@ -119,6 +119,7 @@ impl ViperApp {
         let mut playback = Playback::default();
         playback.volume = settings.volume;
         let playback = Arc::new(Mutex::new(playback));
+        Playback::spawn_driver(&playback);
         #[cfg(target_os = "linux")]
         let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback));
         let mut app = Self {

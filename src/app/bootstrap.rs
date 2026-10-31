@@ -243,7 +243,6 @@ pub fn run() -> eframe::Result<()> {
             return Ok(());
         }
         // Wayland cannot remap a hidden window, so the window is destroyed and recreated on Show.
-        let idle_ctx = egui::Context::default();
         loop {
             // Logging out leaves a hidden instance with a dead display connection, which would
             // block later launches and crash when asked to show its window.
@@ -255,7 +254,7 @@ pub fn run() -> eframe::Result<()> {
                 Ok(TrayEvent::Play) => app.borrow().tray_play(),
                 Ok(TrayEvent::Pause) => app.borrow().tray_pause(),
                 Ok(TrayEvent::Quit) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
-                Err(RecvTimeoutError::Timeout) => app.borrow_mut().tick_in_background(&idle_ctx),
+                Err(RecvTimeoutError::Timeout) => app.borrow_mut().tick_in_background(),
             }
         }
     }

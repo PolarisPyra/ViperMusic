@@ -1,7 +1,6 @@
 use super::application::ViperApp;
 use crate::{
-    features::playback::RepeatMode, platform::updates::UpdateAction, shared::action::AppAction,
-    workbench::WorkbenchContext,
+    platform::updates::UpdateAction, shared::action::AppAction, workbench::WorkbenchContext,
 };
 use eframe::egui;
 use std::{sync::Arc, time::Duration};
@@ -13,29 +12,14 @@ impl Default for ViperApp {
 }
 
 impl ViperApp {
-    /// Advance playback, schedule gapless transitions, and request timely repaints.
-    fn update_playback(&mut self, ctx: &egui::Context) {
+    /// Hand the library to the playback driver, and report playback to toasts, Last.fm, and
+    /// Discord. The driver thread advances tracks, so this needs no repaints of its own.
+    fn update_playback(&mut self) {
         let playback_handle = Arc::clone(&self.playback);
         let mut playback = playback_handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let tracks = &self.library.model.tracks;
-        if playback.has_playback_work() {
-            if playback.is_playing() {
-                playback.advance_if_finished(tracks);
-            }
-            let gapless = self.settings.gapless_playback && playback.repeat_mode != RepeatMode::One;
-            playback.update_gapless(tracks, gapless);
-            if playback.has_playback_work() {
-                ctx.request_repaint_after(if playback.gapless_preparation_pending() {
-                    Duration::from_millis(16)
-                } else if gapless && playback.has_next() {
-                    Duration::from_millis(100)
-                } else {
-                    Duration::from_millis(400)
-                });
-            }
-        }
+        playback.sync_library(&self.library.model.tracks, self.settings.gapless_playback);
         if let Some(error) = playback.error.take() {
             self.toasts.push(error);
         }
@@ -69,8 +53,8 @@ impl ViperApp {
     }
 
     /// Keep playback, scrobbling, and presence running while the window is closed to the tray.
-    pub(crate) fn tick_in_background(&mut self, ctx: &egui::Context) {
-        self.update_playback(ctx);
+    pub(crate) fn tick_in_background(&mut self) {
+        self.update_playback();
     }
 
     /// Apply the selected color way to the window and tray icons when it has changed.
@@ -181,7 +165,7 @@ impl eframe::App for ViperApp {
         if self.library.scanning {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        self.update_playback(ctx);
+        self.update_playback();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

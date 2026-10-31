@@ -16,7 +16,8 @@ impl ViperApp {
                     let update = self
                         .library
                         .apply_watcher_update(discovered, &removed_paths);
-                    self.playback().remap_tracks(&update.track_remap);
+                    self.playback()
+                        .remap_tracks(&update.track_remap, &self.library.model.tracks);
                     #[cfg(target_os = "linux")]
                     self.sync_mpris();
                     if update.selected_album_cleared {
