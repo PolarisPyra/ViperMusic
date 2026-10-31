@@ -177,7 +177,13 @@ pub(crate) fn show(
                         .color(colors.subtle),
                 );
                 ui.add_space(8.0);
-                draw_lyrics_content(ui, lyrics_result, playback.position(), current_track);
+                draw_lyrics_content(
+                    ui,
+                    lyrics_result,
+                    playback.position(),
+                    playback.is_playing(),
+                    current_track,
+                );
             },
         );
     }
@@ -193,11 +199,14 @@ fn draw_lyrics_content(
     ui: &mut egui::Ui,
     result: Option<LyricsResult<'_>>,
     position: std::time::Duration,
+    playing: bool,
     current_track: Option<usize>,
 ) {
     let colors = theme::colors(ui.ctx());
     match result {
-        Some(LyricsResult::Found(lyrics)) => draw_lyrics_lines(ui, lyrics, position, current_track),
+        Some(LyricsResult::Found(lyrics)) => {
+            draw_lyrics_lines(ui, lyrics, position, playing, current_track);
+        }
         Some(LyricsResult::Loading) => {
             ui.label(
                 egui::RichText::new("Fetching lyrics…")
@@ -234,17 +243,27 @@ fn draw_lyrics_lines(
     ui: &mut egui::Ui,
     lyrics: &Lyrics,
     position: std::time::Duration,
+    playing: bool,
     current_track: Option<usize>,
 ) {
     let colors = theme::colors(ui.ctx());
     const ROW_HEIGHT: f32 = 20.0;
     let follow_line_id = egui::Id::new("album-tracklist-lyrics-follow-line");
-    let active_line = lyrics.synced.then(|| {
-        lyrics
+    let started_lines = lyrics
+        .lines
+        .partition_point(|line| line.timestamp.is_some_and(|time| time <= position));
+    let active_line = lyrics.synced.then(|| started_lines.saturating_sub(1));
+    // The player bar repaints only as often as its seek bar moves, so wake for the next line.
+    if playing && lyrics.synced {
+        if let Some(next) = lyrics
             .lines
-            .partition_point(|line| line.timestamp.is_some_and(|time| time <= position))
-            .saturating_sub(1)
-    });
+            .get(started_lines)
+            .and_then(|line| line.timestamp)
+        {
+            ui.ctx()
+                .request_repaint_after(next.saturating_sub(position));
+        }
+    }
     let scroll_height = ui.available_height();
     let last_followed = ui
         .ctx()

@@ -16,6 +16,8 @@ use std::time::Duration;
 
 const PANEL_HEIGHT: f32 = 112.0;
 const TRACK_ART_SIZE: f32 = 68.0;
+/// Shortest wait between repaints while playing, about 30 fps.
+const MIN_PLAYING_REPAINT: Duration = Duration::from_millis(33);
 
 pub(in crate::workbench) fn show(
     ui: &mut egui::Ui,
@@ -376,6 +378,8 @@ pub(in crate::workbench) fn show(
             }
 
             let max_seconds = duration.map_or(0.0, |duration| duration.as_secs_f64());
+            // Seconds until the time label or the knob next changes.
+            let mut next_change = 1.0;
             ui.horizontal(|ui| {
                 let (position_label, _) =
                     ui.allocate_exact_size(egui::vec2(38.0, 14.0), egui::Sense::hover());
@@ -430,6 +434,15 @@ pub(in crate::workbench) fn show(
                 } else {
                     0.0
                 };
+                // Repaint when the time label's second or the knob's pixel next changes, not at a fixed
+                // rate: a long track moves the knob a pixel only every second or so.
+                let position = shown.as_secs_f64();
+                next_change = 1.0 - position.fract();
+                let pixels = f64::from(track_rect.width() * ui.pixels_per_point());
+                if max_seconds > 0.0 && pixels > 0.0 {
+                    let seconds_per_pixel = max_seconds / pixels;
+                    next_change = next_change.min(seconds_per_pixel - position % seconds_per_pixel);
+                }
                 // Fill and knob share one pixel-snapped edge so they never drift apart by a pixel.
                 let knob_x = (track_rect.left() + track_rect.width() * fraction)
                     .round_to_pixels(ui.pixels_per_point());
@@ -482,8 +495,9 @@ pub(in crate::workbench) fn show(
                 colors.muted,
             );
             if playback.is_playing() {
-                // About 30 fps keeps the seek bar advancing evenly instead of in 100 ms steps.
-                ctx.request_repaint_after(Duration::from_millis(33));
+                ctx.request_repaint_after(
+                    Duration::from_secs_f64(next_change).max(MIN_PLAYING_REPAINT),
+                );
             }
             if let Some(album_index) = open_album {
                 workbench.open_album(&mut library.view, album_index);
