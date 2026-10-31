@@ -1,6 +1,6 @@
 name: Release AppImage
 
-# Builds the Linux AppImage when a version tag (v0.1.0, v0.2.0, ...) is pushed,
+# Builds the Linux AppImage when a version tag (v26.1.0, v26.2.0, ...) is pushed,
 # and attaches it to a GitHub release for that tag. Pushes to main don't build.
 # Run it by hand from the Actions tab to build without a tag.
 

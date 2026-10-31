@@ -91,43 +91,45 @@ in the repo always matches the latest tag.
 
 ### Version numbers
 
-Versions are `MAJOR.MINOR.PATCH` with no leading zeros and no suffixes. Read the current version
-with `git describe --tags --abbrev=0`, then raise one part by one:
+Versions are CalVer, `YY.N.P`: the two-digit year, the release number within that year, and the
+patch, with no leading zeros and no suffixes. Let the script count from the newest tag instead of
+working the number out by hand:
 
-- **Patch** for fixes and small changes: `0.5.3` → `0.5.4`.
-- **Minor** for larger features, resetting the patch: `0.5.3` → `0.6.0`.
-- **Major** only for a deliberate major release.
+- `scripts/release.sh bump` is the year's next release: `26.1.3` → `26.2.0`, and in a new year
+  `26.3.0` → `27.0.1`.
+- `scripts/release.sh bump patch` fixes the last release: `26.2.0` → `26.2.1`.
+- `scripts/release.sh next [patch]` prints the version a bump gives and changes nothing.
 
-Hotfixes are ordinary patch releases: a hotfix after `0.5.9` is `0.5.10`, not `0.5.91`. Each
-part is compared as a whole number, so `0.5.91` would sort above every release from `0.5.10` to
-`0.5.90` and break release ordering.
+The first release of each year is `YY.0.1`, so the first CalVer release after `0.6.3` is
+`26.0.1`. Each part is compared as a whole number, so `26.0.1` sorts above every `0.x` release and
+the updater in older copies picks it up.
 
 ### Cutting a release
 
 Run the script from a clean `main` that is up to date with `origin/main`:
 
 ```sh
-scripts/release.sh 0.2.0
+scripts/release.sh bump
 ```
 
 The script checks the version and the repo state, runs Clippy, and prints the release notes for
 the new version. After you confirm, it writes the version into `Cargo.toml` with
 `scripts/set-version.sh`, updates `Cargo.lock`, regenerates `CHANGELOG.md` with a full rewrite
 (not `--prepend`, because the file already has an Unreleased section), commits them as
-`Release v0.2.0`, creates the annotated tag, and pushes `main` and the tag. Nothing is written
+`Release v26.0.1`, creates the annotated tag, and pushes `main` and the tag. Nothing is written
 until you confirm.
 
 Pushing the tag starts the **Release AppImage** workflow (`.github/workflows/release-appimage.yml`).
 It runs `scripts/set-version.sh` with the tag's version, so a tag pushed without the script still
 builds with its own version. It then builds the AppImage on Ubuntu 22.04, runs `git cliff --latest`
-for the release notes, and creates a GitHub release named `Viper Music v0.2.0` with the AppImage
+for the release notes, and creates a GitHub release named `Viper Music v26.0.1` with the AppImage
 attached. Pushes to `main` do not build anything.
 
 To check the build without making a release, run the workflow by hand from the Actions tab
 (**Run workflow**). It builds with the last released version and creates no release.
 
 Don't edit `CHANGELOG.md` by hand, since the next regeneration overwrites it. Tags must start
-with `v` followed by a digit, such as `v0.2.0`, because that is the pattern git-cliff and the
+with `v` followed by a digit, such as `v26.0.1`, because that is the pattern git-cliff and the
 workflow both look for. Never reuse, move, or delete a pushed tag; a broken release is followed
 by the next patch release.
 
