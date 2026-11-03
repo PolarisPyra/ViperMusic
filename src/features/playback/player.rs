@@ -441,11 +441,8 @@ impl Playback {
             self.clear_scheduled_pending();
             return;
         }
+        // Only the current track's end starts the next one; nothing starts by itself while idle.
         if self.current.is_none() {
-            self.refill_repeating_queue();
-            if let Some(next) = self.pop_next_queued_track() {
-                self.start_track(tracks, next);
-            }
             return;
         }
         if self.is_paused()
@@ -857,7 +854,7 @@ impl Playback {
 
     fn start_track_at(&mut self, tracks: &[Track], track_index: usize, position: Duration) {
         let Some(track) = tracks.get(track_index) else {
-            self.current = None;
+            self.stop_current();
             return;
         };
         let result = self.open_decoder(&track.path);
@@ -876,8 +873,7 @@ impl Playback {
                     match Self::open_output() {
                         Ok(output) => self.output = Some(output),
                         Err(error) => {
-                            self.error = Some(error);
-                            self.current = None;
+                            self.fail_to_start(error);
                             return;
                         }
                     }
@@ -900,13 +896,16 @@ impl Playback {
                 self.scheduled_track = None;
                 self.current = Some(track_index);
             }
-            Err(error) => {
-                self.stop_current();
-                self.manual_queue.clear();
-                self.auto_queue.clear();
-                self.error = Some(error);
-            }
+            Err(error) => self.fail_to_start(error),
         }
+    }
+
+    /// Stop playback, with the queue, when a track can't start, rather than trying the next one.
+    fn fail_to_start(&mut self, error: String) {
+        self.stop_current();
+        self.manual_queue.clear();
+        self.auto_queue.clear();
+        self.error = Some(error);
     }
 
     fn open_output() -> Result<MixerDeviceSink, String> {
