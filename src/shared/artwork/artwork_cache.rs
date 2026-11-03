@@ -13,12 +13,22 @@ use std::{
 const MAX_CACHED_ALBUM_TEXTURES: usize = 160;
 const COVER_FADE_DURATION: f64 = 0.42;
 
+/// Where an album's cover stands; an album without a slot has not been asked for yet, or was evicted.
+enum Slot {
+    /// A worker is decoding the cover.
+    Loading,
+    Ready(egui::TextureHandle),
+    /// The cover could not be decoded, so it is not tried again until the cache is cleared.
+    Failed,
+}
+
 pub(crate) struct ArtworkCache {
-    textures: HashMap<usize, egui::TextureHandle>,
+    slots: HashMap<usize, Slot>,
+    /// Albums with a ready texture, least recently drawn first.
     texture_lru: VecDeque<usize>,
     visible_texture_indices: HashSet<usize>,
     texture_fade_started_at: HashMap<usize, f64>,
-    texture_requests: HashSet<(usize, usize)>,
+    /// Bumped by `clear`, so covers decoded for the previous window are dropped.
     texture_epoch: usize,
     texture_workers: Arc<AtomicUsize>,
     texture_receiver: Receiver<(usize, usize, Option<egui::ColorImage>)>,
@@ -29,11 +39,10 @@ impl ArtworkCache {
     pub(crate) fn new() -> Self {
         let (texture_sender, texture_receiver) = mpsc::channel();
         Self {
-            textures: HashMap::new(),
+            slots: HashMap::new(),
             texture_lru: VecDeque::new(),
             visible_texture_indices: HashSet::new(),
             texture_fade_started_at: HashMap::new(),
-            texture_requests: HashSet::new(),
             texture_epoch: 0,
             texture_workers: Arc::new(AtomicUsize::new(0)),
             texture_receiver,
@@ -43,8 +52,7 @@ impl ArtworkCache {
 
     pub(crate) fn clear(&mut self) {
         self.texture_epoch = self.texture_epoch.wrapping_add(1);
-        self.texture_requests.clear();
-        self.textures.clear();
+        self.slots.clear();
         self.texture_lru.clear();
         self.visible_texture_indices.clear();
         self.texture_fade_started_at.clear();
@@ -61,46 +69,50 @@ impl ArtworkCache {
         bytes: &Arc<[u8]>,
     ) -> Option<egui::TextureHandle> {
         self.visible_texture_indices.insert(album_index);
-        if let Some(texture) = self.textures.get(&album_index).cloned() {
-            self.texture_lru.retain(|&index| index != album_index);
-            self.texture_lru.push_back(album_index);
-            return Some(texture);
+        match self.slots.get(&album_index) {
+            Some(Slot::Ready(texture)) => {
+                let texture = texture.clone();
+                self.texture_lru.retain(|&index| index != album_index);
+                self.texture_lru.push_back(album_index);
+                return Some(texture);
+            }
+            Some(Slot::Loading | Slot::Failed) => return None,
+            None => {}
         }
 
-        let request = (self.texture_epoch, album_index);
-        if !self.texture_requests.contains(&request) {
-            let mut active = self.texture_workers.load(Ordering::Relaxed);
-            while active < 4 {
-                match self.texture_workers.compare_exchange_weak(
-                    active,
-                    active + 1,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(observed) => active = observed,
-                }
+        let mut active = self.texture_workers.load(Ordering::Relaxed);
+        while active < 4 {
+            match self.texture_workers.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => active = observed,
             }
-            if active < 4 {
-                let bytes = Arc::clone(bytes);
-                let sender = self.texture_sender.clone();
-                let repaint = ctx.clone();
-                let workers = Arc::clone(&self.texture_workers);
-                let epoch = self.texture_epoch;
-                if std::thread::Builder::new()
-                    .name("album-art-decode".into())
-                    .spawn(move || {
-                        let decoded = decode_album_art(&bytes);
-                        let _ = sender.send((epoch, album_index, decoded));
-                        workers.fetch_sub(1, Ordering::Relaxed);
-                        repaint.request_repaint();
-                    })
-                    .is_ok()
-                {
-                    self.texture_requests.insert(request);
-                } else {
-                    self.texture_workers.fetch_sub(1, Ordering::Relaxed);
-                }
+        }
+        if active < 4 {
+            let bytes = Arc::clone(bytes);
+            let sender = self.texture_sender.clone();
+            let repaint = ctx.clone();
+            let workers = Arc::clone(&self.texture_workers);
+            let epoch = self.texture_epoch;
+            if std::thread::Builder::new()
+                .name("album-art-decode".into())
+                .spawn(move || {
+                    // A panic would otherwise keep the worker counted and the cover loading.
+                    let decoded =
+                        std::panic::catch_unwind(|| decode_album_art(&bytes)).unwrap_or(None);
+                    let _ = sender.send((epoch, album_index, decoded));
+                    workers.fetch_sub(1, Ordering::Relaxed);
+                    repaint.request_repaint();
+                })
+                .is_ok()
+            {
+                self.slots.insert(album_index, Slot::Loading);
+            } else {
+                self.texture_workers.fetch_sub(1, Ordering::Relaxed);
             }
         }
         None
@@ -108,11 +120,11 @@ impl ArtworkCache {
 
     pub(crate) fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((epoch, album_index, image)) = self.texture_receiver.try_recv() {
-            self.texture_requests.remove(&(epoch, album_index));
             if epoch != self.texture_epoch {
                 continue;
             }
             let Some(image) = image else {
+                self.slots.insert(album_index, Slot::Failed);
                 continue;
             };
             let texture = ctx.load_texture(
@@ -120,7 +132,7 @@ impl ArtworkCache {
                 image,
                 egui::TextureOptions::LINEAR,
             );
-            while self.textures.len() >= MAX_CACHED_ALBUM_TEXTURES {
+            while self.texture_lru.len() >= MAX_CACHED_ALBUM_TEXTURES {
                 let Some(oldest_position) = self
                     .texture_lru
                     .iter()
@@ -130,10 +142,10 @@ impl ArtworkCache {
                 };
                 // Keep the fade record so a cover reloaded after eviction appears without fading.
                 if let Some(oldest) = self.texture_lru.remove(oldest_position) {
-                    self.textures.remove(&oldest);
+                    self.slots.remove(&oldest);
                 }
             }
-            self.textures.insert(album_index, texture);
+            self.slots.insert(album_index, Slot::Ready(texture));
             self.texture_lru.push_back(album_index);
         }
     }
@@ -142,7 +154,7 @@ impl ArtworkCache {
         let now = ctx.input(|input| input.time);
         let mut fade_in_progress = false;
         for &album_index in &self.visible_texture_indices {
-            if !self.textures.contains_key(&album_index) {
+            if !matches!(self.slots.get(&album_index), Some(Slot::Ready(_))) {
                 continue;
             }
             let fade_started_at = self
