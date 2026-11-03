@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Git runs this for each commit once `git config core.hooksPath scripts/hooks` is set (README,
+# Releases). See scripts/changelog.sh.
+exec "$(git rev-parse --show-toplevel)/scripts/changelog.sh" hook "$1"

@@ -1,0 +1,44 @@
+name: CI
+
+# Checks every push to main, every pull request, and a run started by hand, with what
+# `scripts/release.sh` checks before a release: Clippy. It runs on the Ubuntu the AppImage is built
+# on, so a Linux build problem shows here rather than at release. When a push to main passes, the
+# Release workflow starts: it updates the release pull request, or tags and publishes a release
+# whose pull request was just merged.
+#
+# Actions are pinned to commits; the comment after each names the version it was.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes an older run's result moot: on main, the newer run's release
+# pull request carries the older push's commits too.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: ./.github/actions/setup
+        with:
+          rust-components: clippy
+
+      # Saved only from main, so every branch and pull request starts from main's.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        run: cargo clippy --all-targets

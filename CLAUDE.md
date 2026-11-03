@@ -2,16 +2,20 @@
 
 ## Releases
 
-Triggers: any request to bump the version (for example "bump to 26.2.0", "bump release version", "bump and release", "cut a release"). Releases follow the steps below; never tag by hand.
+Releases follow [docs/release.md](docs/release.md); never tag by hand.
 
 Scope: this repo only (Viper Music). A bump or release request never covers the other Viper repo (vipermixer), even if the request says "both" or "all repos"; that repo gets its own request.
 
-1. Check that `main` is clean and up to date with `origin/main`. Pick the bump level with the rules in AGENTS.md ("Pushing and releasing"): `release` (default) or `patch`. Check it with `scripts/release.sh next [release|patch]`.
-2. Run `scripts/release.sh bump [release|patch]` (or `scripts/release.sh YY.N.P` when the user names a version). Don't edit `Cargo.toml` first; after confirmation the script writes the version with `scripts/set-version.sh`, updates `Cargo.lock`, regenerates `CHANGELOG.md` with git-cliff, commits `Release vYY.N.P`, creates the annotated tag, and pushes `main` and the tag. Show the release notes it prints before confirming.
-3. Afterwards check `gh run list` and `gh release view vYY.N.P`, and report what was built.
+- Every push to `main` runs CI, and when it passes, the Release workflow checks whether a commit since the last tag has a `Changelog:` paragraph other than `none`. If one does, it puts the next version and its notes on the `release` branch and keeps the "Release vYY.M.N" pull request up to date. Merging that pull request releases it: the run after the merge tags it, builds the AppImage, and creates the GitHub release. So "push" never releases, and you never bump the version.
+- "Release" (or "merge the release") means `gh pr merge release --merge`, only ever with a merge commit, never squash or rebase.
+- Only "release now" (or "bump ver", "bump and release", "push and release") asks for a release that can't wait: commit and push the work, then run `scripts/release.sh bump` (or `scripts/release.sh YY.M.N` when the user names a version) in the foreground. It counts the version from the newest tag, runs Clippy, writes and checks the notes, sets the version, commits `Release vYY.M.N`, tags, and pushes, asking nothing. Include the notes it prints and the run's link in your reply, then end the turn.
+- Versions are CalVer `YY.M.N`: the two-digit year, the month, and which release of that month (26.11.4 → 26.11.5, then 26.12.0 in a new month). Don't work a number out yourself: `scripts/release.sh next` prints it.
+- Never watch GitHub Actions runs unless asked; `scripts/release.sh watch YY.M.N` follows one.
+- Never move, reuse, or force-push an existing tag. If the tag already exists, stop and ask.
 
-Notes:
-- `git-cliff` lives in `~/.cargo/bin`, which `~/.zshenv` puts on PATH for `/usr/bin/zsh`. The agent's Bash tool runs `/usr/bin/zsh` but its environment does not include that PATH, so `command -v git-cliff` fails there. Prefix commands in that tool with `export PATH="$HOME/.cargo/bin:$PATH"`.
-- Pushing a tag starts the Release AppImage workflow. Never move or force-push an existing tag. If the tag already exists, stop and ask.
-- Only one Release AppImage run should exist per tag. If an older run for the same tag is still going, cancel it with `gh run cancel <id>` before the newer run creates the release.
-- Do not edit `CHANGELOG.md` by hand; it is generated from commit subjects, so write subjects as "Add ...", "Fix ...", or "Change ...".
+## Commits
+
+- Commit subjects are short, sentence-case, and imperative, with no prefix, and describe the user-visible change.
+- Every commit that changes the app needs a paragraph in its message starting with `Changelog:` and its group (Added, Changed, Fixed, Removed, or Security), written for users by the rules in `docs/changelog-style.md`, for example "Changelog: Fixed: Playback no longer stops after a song while the window is minimized." A change users can't notice gets `Changelog: none`. The `commit-msg` hook (`git config core.hooksPath scripts/hooks`) enforces both; if it turns a commit down, fix the message rather than bypassing the hook. These paragraphs are the release's notes word for word, so a follow-up to a change in the same release gets `Changelog: none`.
+- Keep internal CI, release, and tooling changes out of the changelog: commit them separately so they only touch `.github/`, `scripts/`, `docs/`, or `*.md`, which need no `Changelog:` paragraph. If one has to touch app files, write `Changelog: none`.
+- Do not edit `CHANGELOG.md` by hand, except to fix notes already released: edit that release's section, commit it, and run `scripts/release.sh notes <version>`.

@@ -80,58 +80,20 @@ SMB1-only servers require insecure legacy protocol support and are not enabled b
 
 ## Releases
 
-Changelog entries and release notes come from the commit history with
-[git-cliff](https://git-cliff.org/), configured in `cliff.toml`. Each commit is sorted into
-a group by the start of its subject line, and commits that start with `Release`, `Bump`,
-`Merge`, or `Chore` are left out. Words that don't match a group go under **Other**, so write
-commit subjects with a leading verb, for example `Add ...`, `Fix ...`, or `Change ...`.
+Releases follow [docs/release.md](docs/release.md). In short:
 
-The release script sets the version, so you never edit it in `Cargo.toml` by hand. The version
-in the repo always matches the latest tag.
-
-### Version numbers
-
-Versions are CalVer, `YY.N.P`: the two-digit year, the release number within that year, and the
-patch, with no leading zeros and no suffixes. Let the script count from the newest tag instead of
-working the number out by hand:
-
-- `scripts/release.sh bump` is the year's next release: `26.1.3` → `26.2.0`, and in a new year
-  `26.3.0` → `27.0.1`.
-- `scripts/release.sh bump patch` fixes the last release: `26.2.0` → `26.2.1`.
-- `scripts/release.sh next [patch]` prints the version a bump gives and changes nothing.
-
-The first release of each year is `YY.0.1`, so the first CalVer release after `0.6.3` is
-`26.0.1`. Each part is compared as a whole number, so `26.0.1` sorts above every `0.x` release and
-the updater in older copies picks it up.
-
-### Cutting a release
-
-Run the script from a clean `main` that is up to date with `origin/main`:
-
-```sh
-scripts/release.sh bump
-```
-
-The script checks the version and the repo state, runs Clippy, and prints the release notes for
-the new version. After you confirm, it writes the version into `Cargo.toml` with
-`scripts/set-version.sh`, updates `Cargo.lock`, regenerates `CHANGELOG.md` with a full rewrite
-(not `--prepend`, because the file already has an Unreleased section), commits them as
-`Release v26.0.1`, creates the annotated tag, and pushes `main` and the tag. Nothing is written
-until you confirm.
-
-Pushing the tag starts the **Release AppImage** workflow (`.github/workflows/release-appimage.yml`).
-It runs `scripts/set-version.sh` with the tag's version, so a tag pushed without the script still
-builds with its own version. It then builds the AppImage on Ubuntu 22.04, runs `git cliff --latest`
-for the release notes, and creates a GitHub release named `Viper Music v26.0.1` with the AppImage
-attached. Pushes to `main` do not build anything.
-
-To check the build without making a release, run the workflow by hand from the Actions tab
-(**Run workflow**). It builds with the last released version and creates no release.
-
-Don't edit `CHANGELOG.md` by hand, since the next regeneration overwrites it. Tags must start
-with `v` followed by a digit, such as `v26.0.1`, because that is the pattern git-cliff and the
-workflow both look for. Never reuse, move, or delete a pushed tag; a broken release is followed
-by the next patch release.
+- Versions are CalVer, `YY.M.N`: the two-digit year, the month, and which release of that month it
+  is, from 0 (`26.11.4` → `26.11.5`, then `26.12.0` in a new month). `scripts/release.sh next`
+  prints the next one; never set a version by hand.
+- Every commit that changes the app ends its message with a `Changelog:` paragraph for users, such
+  as `Changelog: Fixed: …`, or `Changelog: none`. The rules are in
+  [docs/changelog-style.md](docs/changelog-style.md). Turn on the hook that checks it once per
+  clone with `git config core.hooksPath scripts/hooks`.
+- After each push to `main` that passes CI, the Release workflow keeps a **Release vYY.M.N** pull
+  request up to date with the next version and its notes. Merging it with a merge commit
+  (`gh pr merge release --merge`) tags the release, builds the AppImage, and creates the GitHub
+  release with the notes from `CHANGELOG.md`.
+- To release right away from a clean, up-to-date `main`, run `scripts/release.sh bump`.
 
 ## Project layout
 

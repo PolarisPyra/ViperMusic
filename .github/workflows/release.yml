@@ -1,0 +1,157 @@
+name: Release
+
+# Runs after each push to main that passes the CI workflow. While a commit since the last release
+# has a Changelog: paragraph for users, it keeps one "Release vYY.M.N" pull request up to date: the
+# next version and its notes, one commit on top of the commit the checks passed on. Merging that
+# pull request with a merge commit releases it: the run after the merge tags it, builds the Linux
+# AppImage, and creates the GitHub release with the tag's notes and the AppImage, which installed
+# copies update to. A tag pushed by `scripts/release.sh` is built and published the same way.
+# scripts/release.sh does the work, and docs/release.md explains it.
+#
+# A push that fails the checks changes nothing; the next push that passes brings the pull request
+# up to date.
+#
+# Run it by hand (Actions → Release → Run workflow) to build the AppImage without publishing
+# anything, to try a change to the build before releasing.
+#
+# Actions are pinned to commits, so a moved tag can't change what runs. The comment after each
+# names the version it was.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Each run of the CI workflow on main. Only a push that passed goes on; see the plan job.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Whether a release pull request was just merged, and as which version. A CI run started by hand,
+  # or one that failed or was cancelled for a newer push, changes nothing.
+  plan:
+    if: >-
+      github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Look for a merged release
+        id: plan
+        run: scripts/release.sh ci-plan
+
+  # Tags the merged release. A tag pushed with the workflow's token starts no second run, so this
+  # run builds it.
+  cut:
+    needs: plan
+    if: needs.plan.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.cut.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Tag ${{ needs.plan.outputs.version }}
+        id: cut
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        # An annotated tag records who made it.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          scripts/release.sh ci-tag "$VERSION"
+
+  # Opens, updates, or closes the release pull request. After a merge it runs once the tag is up,
+  # so commits pushed before the merge that the release left out get a pull request of their own.
+  pr:
+    needs: [plan, cut]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.cut.result != 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Update the release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          scripts/release.sh ci-pr
+
+  appimage:
+    # Built on the oldest Ubuntu runner still available, so the AppImage links against an older
+    # glibc and runs on newer distributions too.
+    needs: cut
+    # A tag, a release this run tagged, or a build by hand without publishing.
+    if: >-
+      !cancelled() && !failure() && (github.event_name == 'push'
+      || github.event_name == 'workflow_dispatch' || needs.cut.outputs.tag != '')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      # linuxdeploy is itself an AppImage; this lets it run without FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+      # The tag being published, or nothing for a build by hand.
+      RELEASE_TAG: ${{ needs.cut.outputs.tag || (github.ref_type == 'tag' && github.ref_name || '') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.cut.outputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # A tag pushed without `scripts/release.sh` still builds with its own version.
+      - name: Set the version from the tag
+        if: env.RELEASE_TAG != ''
+        run: scripts/set-version.sh "$RELEASE_TAG"
+
+      - name: Build
+        run: scripts/build.sh appimage
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: viper-appimage
+          path: target/appimage/Viper-Music-x86_64.AppImage
+
+      - name: Create the GitHub release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release.sh ci-release

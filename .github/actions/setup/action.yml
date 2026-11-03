@@ -1,0 +1,21 @@
+name: Set up the build
+description: >
+  What every job that builds Viper Music needs: its Linux packages and the stable Rust toolchain.
+inputs:
+  rust-components:
+    description: Extra Rust components, such as clippy for the checks.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install Viper's Linux packages
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y -o Acquire::Retries=3 build-essential file libasound2-dev \
+          libdbus-1-dev libfontconfig1-dev libfreetype-dev libfuse2 libsmbclient-dev pkg-config
+
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      with:
+        toolchain: stable
+        components: ${{ inputs.rust-components }}
