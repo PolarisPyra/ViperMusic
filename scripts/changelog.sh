@@ -29,7 +29,7 @@ SECTIONS=(Added Changed Fixed Removed Security)
 # What a release with only internal changes says.
 NOTHING_NEW="Behind-the-scenes improvements, with nothing new to see."
 # Product and platform names whose capitals the identifier checks would flag.
-NAMES='GitHub|AppImage|PipeWire|PulseAudio|YouTube|macOS'
+NAMES='GitHub|AppImage|MusicBrainz|PipeWire|PulseAudio|YouTube|macOS'
 
 die() {
   echo "$*" >&2
