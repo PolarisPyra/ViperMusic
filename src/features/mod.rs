@@ -5,5 +5,6 @@ pub mod library;
 pub(crate) mod lyrics;
 pub mod playback;
 pub mod preferences;
+pub(crate) mod ripper;
 pub(crate) mod songs;
 pub(crate) mod track_menu;

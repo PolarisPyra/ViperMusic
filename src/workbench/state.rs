@@ -5,11 +5,12 @@ pub(crate) enum Page {
     Home,
     Albums,
     Songs,
+    Ripper,
 }
 
 impl Page {
     /// Every page reachable from the sidebar and View menu, in display order.
-    pub(crate) const ALL: [Self; 3] = [Self::Home, Self::Albums, Self::Songs];
+    pub(crate) const ALL: [Self; 4] = [Self::Home, Self::Albums, Self::Songs, Self::Ripper];
 
     /// Return the page name shown in navigation.
     pub(crate) fn label(self) -> &'static str {
@@ -17,6 +18,7 @@ impl Page {
             Self::Home => "Home",
             Self::Albums => "Albums",
             Self::Songs => "Songs",
+            Self::Ripper => "Rip CD",
         }
     }
 }

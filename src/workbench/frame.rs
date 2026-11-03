@@ -28,7 +28,12 @@ pub(crate) fn show(ui: &mut egui::Ui, context: &mut WorkbenchContext<'_>) -> Vec
         context.artwork_cache,
         context.toasts,
     );
-    if let Some(error) = shell::sidebar::show(ui, context.settings, context.state) {
+    if let Some(error) = shell::sidebar::show(
+        ui,
+        context.settings,
+        context.state,
+        context.ripper.progress(),
+    ) {
         context.toasts.push(error);
     }
     shell::queue_panel::show(ui, context.state, context.playback, context.library);

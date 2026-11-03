@@ -162,6 +162,7 @@ impl eframe::App for ViperApp {
         self.sync_logo(ctx);
         self.poll_file_watcher(ctx);
         self.artwork_cache.poll(ctx);
+        self.ripper.poll(ctx, &mut self.toasts);
         if self.library.scanning {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -187,6 +188,7 @@ impl eframe::App for ViperApp {
                 library: &mut self.library,
                 playback: &mut playback,
                 lyrics: &mut self.lyrics,
+                ripper: &mut self.ripper,
                 settings: &mut self.settings,
                 preferences: &mut self.preferences,
                 lastfm_service: &mut self.lastfm_service,

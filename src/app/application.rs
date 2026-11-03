@@ -4,6 +4,7 @@ use crate::{
     features::playback::Playback,
     features::{
         library::state::LibraryFeature, lyrics::LyricsFeature, preferences::PreferencesState,
+        ripper::RipperFeature,
     },
     platform::{
         persistence::settings::{LastFmSettings, Settings, StartupView},
@@ -32,6 +33,7 @@ pub struct ViperApp {
     pub(crate) library: LibraryFeature,
     pub(crate) playback: Arc<Mutex<Playback>>,
     pub(crate) lyrics: LyricsFeature,
+    pub(crate) ripper: RipperFeature,
     pub(crate) settings: Settings,
     pub(crate) preferences: PreferencesState,
     pub(super) discord_presence: DiscordPresence,
@@ -127,6 +129,7 @@ impl ViperApp {
             library: LibraryFeature::new(random_sort_seed),
             playback,
             lyrics: LyricsFeature::default(),
+            ripper: RipperFeature::default(),
             settings,
             preferences,
             discord_presence: DiscordPresence::default(),

@@ -105,7 +105,7 @@ impl ViperApp {
         let enter = pressed(Key::Enter);
         let view = &mut self.library.view;
         match self.workbench.page {
-            Page::Home => {}
+            Page::Home | Page::Ripper => {}
             Page::Albums if self.workbench.show_album_details => {
                 let Some(album) = view
                     .selected_album

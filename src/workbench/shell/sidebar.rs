@@ -27,6 +27,7 @@ pub(in crate::workbench) fn show(
     ui: &mut egui::Ui,
     settings: &mut Settings,
     workbench: &mut WorkbenchState,
+    rip_progress: Option<f32>,
 ) -> Option<String> {
     let ctx = &ui.ctx().clone();
     let colors = theme::colors(ctx);
@@ -66,7 +67,9 @@ pub(in crate::workbench) fn show(
             // Switch the nav layout with the live width so labels do not clip while resizing.
             let compact = resize_state.width < COMPACT_THRESHOLD;
             for page in Page::ALL {
-                if let Some(save_error) = nav_item(ui, page, compact, workbench, settings) {
+                if let Some(save_error) =
+                    nav_item(ui, page, compact, workbench, settings, rip_progress)
+                {
                     error = Some(save_error);
                 }
             }
@@ -144,7 +147,8 @@ pub(in crate::workbench) fn show(
     error
 }
 
-/// Draw a sidebar navigation entry with a context menu for choosing the startup page.
+/// Draw a sidebar navigation entry with a context menu for choosing the startup page, and the
+/// rip's progress under Rip CD while a CD is ripped.
 ///
 /// # Returns
 /// A message describing a settings save failure, if any.
@@ -154,12 +158,20 @@ fn nav_item(
     compact: bool,
     workbench: &mut WorkbenchState,
     settings: &mut Settings,
+    rip_progress: Option<f32>,
 ) -> Option<String> {
     let label = page.label();
     let (icon, startup_view) = match page {
-        Page::Home => (egui_phosphor::regular::HOUSE_SIMPLE, StartupView::Home),
-        Page::Albums => (egui_phosphor::regular::DISC, StartupView::Albums),
-        Page::Songs => (egui_phosphor::regular::MUSIC_NOTES, StartupView::Songs),
+        Page::Home => (
+            egui_phosphor::regular::HOUSE_SIMPLE,
+            Some(StartupView::Home),
+        ),
+        Page::Albums => (egui_phosphor::regular::DISC, Some(StartupView::Albums)),
+        Page::Songs => (
+            egui_phosphor::regular::MUSIC_NOTES,
+            Some(StartupView::Songs),
+        ),
+        Page::Ripper => (egui_phosphor::regular::VINYL_RECORD, None),
     };
     let mut error = None;
     let colors = theme::colors(ui.ctx());
@@ -205,9 +217,29 @@ fn nav_item(
         );
         response
     };
+    if let (Page::Ripper, Some(progress)) = (page, rip_progress) {
+        // A thin bar along the entry's bottom edge, so a rip can be followed from any page.
+        let track = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 8.0, rect.bottom() - 4.0),
+            egui::pos2(rect.right() - 8.0, rect.bottom() - 2.0),
+        );
+        ui.painter().rect_filled(track, 1.0, colors.border);
+        let mut filled = track;
+        filled.set_width(track.width() * progress.clamp(0.0, 1.0));
+        ui.painter().rect_filled(filled, 1.0, colors.accent);
+    }
+    let response = match (page, rip_progress) {
+        (Page::Ripper, Some(progress)) => {
+            response.on_hover_text(format!("Ripping a CD: {:.0}%", progress * 100.0))
+        }
+        _ => response,
+    };
     if response.clicked_by(egui::PointerButton::Primary) {
         workbench.page = page;
     }
+    let Some(startup_view) = startup_view else {
+        return error;
+    };
     response.context_menu(|ui| {
         if ui.button(format!("Set {label} as startup view")).clicked() {
             settings.startup_view = startup_view;

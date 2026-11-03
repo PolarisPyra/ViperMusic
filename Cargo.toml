@@ -32,6 +32,8 @@ webbrowser = "1"
 keyring = { version = "4.2", default-features = false, features = ["v1"] }
 semver = "1"
 sha2 = "0.11"
+flacenc = "0.5"
+sha1 = "0.11"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tray-icon = { version = "0.26.1", default-features = false }

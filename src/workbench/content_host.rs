@@ -46,5 +46,18 @@ pub(crate) fn show(ui: &mut egui::Ui, context: &mut WorkbenchContext<'_>) -> Opt
             );
             None
         }
+        Page::Ripper => {
+            features::ripper::show(
+                ui,
+                features::ripper::RipperScreen {
+                    ripper: context.ripper,
+                    workbench: context.state,
+                    library: context.library,
+                    settings: context.settings,
+                    toasts: context.toasts,
+                },
+            );
+            None
+        }
     }
 }
