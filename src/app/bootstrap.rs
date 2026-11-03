@@ -236,10 +236,15 @@ pub fn run() -> eframe::Result<()> {
                 }
             }),
         )?;
+        // Quitting wins over a reopen asked for in the same frame, which would otherwise bring the
+        // window back and leave the quit to fire the next time it is only closed to the tray.
+        if app.borrow().workbench.quit_requested {
+            return Ok(());
+        }
         if reopen.replace(false) {
             continue;
         }
-        if !tray_available || app.borrow().workbench.quit_requested {
+        if !tray_available {
             return Ok(());
         }
         // Wayland cannot remap a hidden window, so the window is destroyed and recreated on Show.
