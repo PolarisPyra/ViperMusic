@@ -3,6 +3,18 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.0] - 2026-11-03
+
+### Added
+
+- A new Rip CD page in the sidebar copies an audio CD into your library as FLAC files, named and tagged with the album, tracks and cover from MusicBrainz, which you can edit before ripping. A bar under Rip CD in the sidebar shows how far a rip has got while you use the rest of Viper Music.
+
+### Fixed
+
+- With gapless playback on, turning on shuffle or repeat or adding songs to the queue while nothing is playing no longer starts playback on its own, and a song that can't be opened stops playback instead of being tried again and again.
+- Clicking Disconnect for Last.fm in Preferences → Connections while sign-in is still finishing no longer signs you back in a moment later.
+- Quitting from the tray or the File menu no longer sometimes reopens the window instead, which made Viper Music quit the next time you only closed the window to the tray.
+
 ## [26.0.1] - 2026-10-31
 
 ### Changed
@@ -274,5 +286,3 @@ Each release adds its notes at the top; see docs/release.md.
 
 - Remove audio device requirement from README
 - Remove hyphens from README description
-
-

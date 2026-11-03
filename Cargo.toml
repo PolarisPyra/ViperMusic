@@ -1,6 +1,6 @@
 [package]
 name = "viper"
-version = "26.0.1"
+version = "26.11.0"
 edition = "2021"
 
 [dependencies]
