@@ -17,11 +17,23 @@ enum Event {
     Scrobble(Result<(), String>),
 }
 
+/// Where signing in to Last.fm stands. A reply that arrives in any other step is stale, such as
+/// one from a sign-in the user disconnected during, and is dropped.
+enum SignIn {
+    Idle,
+    /// Asking Last.fm for a token and opening its authorization page.
+    RequestingToken,
+    /// The user approves access in the browser, then finishes sign-in with this token.
+    AwaitingApproval(String),
+    /// Trading the approved token for a session.
+    Exchanging,
+}
+
 /// Last.fm authorization and asynchronous playback reporting.
 pub(crate) struct LastFmService {
     sender: Sender<Event>,
     receiver: Receiver<Event>,
-    auth_token: Option<String>,
+    sign_in: SignIn,
     current_track: Option<usize>,
     last_position: Duration,
     now_playing_track: Option<usize>,
@@ -36,7 +48,7 @@ impl Default for LastFmService {
         Self {
             sender,
             receiver,
-            auth_token: None,
+            sign_in: SignIn::Idle,
             current_track: None,
             last_position: Duration::ZERO,
             now_playing_track: None,
@@ -53,7 +65,7 @@ impl LastFmService {
     }
 
     pub(crate) fn can_finish_auth(&self) -> bool {
-        self.auth_token.is_some()
+        matches!(self.sign_in, SignIn::AwaitingApproval(_))
     }
 
     pub(crate) fn start_auth(&mut self, settings: &LastFmSettings) {
@@ -63,7 +75,7 @@ impl LastFmService {
             self.status = "Enter an API key and shared secret first".to_owned();
             return;
         }
-        self.auth_token = None;
+        self.sign_in = SignIn::RequestingToken;
         self.status = "Requesting authorization...".to_owned();
         let sender = self.sender.clone();
         let credentials = settings.clone();
@@ -83,10 +95,12 @@ impl LastFmService {
     }
 
     pub(crate) fn finish_auth(&mut self, settings: &LastFmSettings) {
-        let Some(token) = self.auth_token.clone() else {
+        let SignIn::AwaitingApproval(token) = &self.sign_in else {
             self.status = "Start authorization before finishing sign-in".to_owned();
             return;
         };
+        let token = token.clone();
+        self.sign_in = SignIn::Exchanging;
         self.status = "Finishing Last.fm sign-in...".to_owned();
         let sender = self.sender.clone();
         let credentials = settings.clone();
@@ -97,7 +111,7 @@ impl LastFmService {
     }
 
     pub(crate) fn disconnect(&mut self) {
-        self.auth_token = None;
+        self.sign_in = SignIn::Idle;
         self.now_playing_track = None;
         self.status = "Not connected".to_owned();
     }
@@ -105,22 +119,37 @@ impl LastFmService {
     pub(crate) fn poll(&mut self, settings: &mut LastFmSettings) -> bool {
         let mut changed = false;
         while let Ok(event) = self.receiver.try_recv() {
+            let stale = match (&event, &self.sign_in) {
+                (Event::Token(_), SignIn::RequestingToken)
+                | (Event::Session(_), SignIn::Exchanging) => false,
+                (Event::Token(_) | Event::Session(_), _) => true,
+                _ => false,
+            };
+            if stale {
+                continue;
+            }
             match event {
                 Event::Token(Ok(token)) => {
-                    self.auth_token = Some(token);
+                    self.sign_in = SignIn::AwaitingApproval(token);
                     self.status = "Authorization page opened. Approve access, then finish sign-in."
                         .to_owned();
                 }
-                Event::Token(Err(error)) => self.status = error,
+                Event::Token(Err(error)) => {
+                    self.sign_in = SignIn::Idle;
+                    self.status = error;
+                }
                 Event::Session(Ok((session_key, username))) => {
                     settings.session_key = Some(session_key.into());
                     settings.username = Some(username.clone());
-                    self.auth_token = None;
+                    self.sign_in = SignIn::Idle;
                     self.status = format!("Connected as {username}");
                     self.now_playing_track = None;
                     changed = true;
                 }
-                Event::Session(Err(error)) => self.status = error,
+                Event::Session(Err(error)) => {
+                    self.sign_in = SignIn::Idle;
+                    self.status = error;
+                }
                 Event::NowPlaying(Ok(())) => {
                     self.status = "Now playing updated on Last.fm".to_owned()
                 }
