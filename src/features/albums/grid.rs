@@ -83,6 +83,11 @@ fn show_album_card(
     let cover_opacity = screen.album_texture_opacity(ctx, index);
     let album = &screen.library.model.albums[index];
     let selected = screen.library.view.highlighted_album == Some(index);
+    // Checked before drawing, since the card's fill is painted before its response exists.
+    let hovered = ui.rect_contains_pointer(egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(card_width, card_height),
+    ));
     let response = ui.allocate_ui_with_layout(
         egui::vec2(card_width, card_height),
         egui::Layout::top_down(egui::Align::Min),
@@ -90,6 +95,8 @@ fn show_album_card(
             egui::Frame::new()
                 .fill(if selected {
                     colors.selected
+                } else if hovered {
+                    colors.hover
                 } else {
                     egui::Color32::TRANSPARENT
                 })

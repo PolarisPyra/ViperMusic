@@ -533,6 +533,9 @@ impl TrackRows<'_> {
         let highlighted = selected || context_menu_open;
         if highlighted {
             ui.painter().rect_filled(highlight, 3.0, colors.selected);
+        } else if response.contains_pointer() {
+            // The title and artist labels sit on top of the row, so `hovered` misses them.
+            ui.painter().rect_filled(highlight, 3.0, colors.hover);
         }
 
         let leading =
