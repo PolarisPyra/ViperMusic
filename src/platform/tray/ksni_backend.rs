@@ -1,4 +1,8 @@
-use std::sync::{mpsc::Sender, Arc};
+use std::{
+    sync::{mpsc::Sender, Arc},
+    thread,
+    time::Duration,
+};
 
 use image::DynamicImage;
 use ksni::{
@@ -21,6 +25,16 @@ impl LinuxTray {
     fn send(&self, event: TrayEvent) {
         let _ = self.sender.send(event);
         (self.wake)();
+        // On Wayland a minimized window can stay blocked presenting its last frame, so it never
+        // sees the quit. Exit anyway if it is still running shortly after, skipping exit handlers
+        // because the graphics driver's can wait forever on that blocked frame.
+        if matches!(event, TrayEvent::Quit) {
+            thread::spawn(|| {
+                thread::sleep(Duration::from_secs(2));
+                // SAFETY: `_exit` ends the process at once and touches no Rust state.
+                unsafe { libc::_exit(0) };
+            });
+        }
     }
 }
 
