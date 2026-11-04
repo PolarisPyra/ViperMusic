@@ -318,11 +318,13 @@ fn waiting(ui: &mut egui::Ui, colors: Palette, state: WaitingFor, command: &mut 
         WaitingFor::Disc(Some(DriveStatus::Inaccessible(reason))) => card(ui, colors, |ui| {
             card_title(ui, colors, icons::WARNING, "Can't use this drive");
             card_text(ui, colors, &reason);
-            card_text(
-                ui,
-                colors,
-                "On most systems your user needs to be in the optical or cdrom group.",
-            );
+            if cfg!(target_os = "linux") {
+                card_text(
+                    ui,
+                    colors,
+                    "On most systems your user needs to be in the optical or cdrom group.",
+                );
+            }
         }),
     }
 }

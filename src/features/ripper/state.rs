@@ -415,7 +415,10 @@ impl RipperFeature {
 
     /// Whether ripping needs cdparanoia and it is missing.
     pub(crate) fn needs_paranoia(&self) -> bool {
-        matches!(self.selected, Some(Drive::Device { .. })) && !paranoia_installed()
+        self.selected
+            .as_ref()
+            .is_some_and(Drive::reads_with_paranoia)
+            && !paranoia_installed()
     }
 
     /// The rip's progress from 0 to 1 while ripping, for the sidebar.
