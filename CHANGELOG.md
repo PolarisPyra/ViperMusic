@@ -3,6 +3,18 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.3] - 2026-11-04
+
+### Added
+
+- You can now edit an album's tags from its right-click menu, by hand or by looking the album up on MusicBrainz and picking the matching release.
+- You can hide pages from the sidebar by right-clicking them, or choose which pages it shows in Preferences → View; hidden pages stay in the View menu. The sidebar's right-click menu now matches the album right-click menu.
+- Album covers in the album grid and tracks in an album's track list now light up when you hover over them.
+
+### Changed
+
+- Discord Rich Presence works without setting up your own Discord application, and Preferences → Services lets you choose what it shows: the song, artist, album, time left, and whether it stays up while paused.
+
 ## [26.11.2] - 2026-11-04
 
 ### Fixed
