@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.2] - 2026-11-04
+
+### Fixed
+
+- Choosing Quit from the system tray menu now quits Viper Music even while its window is minimized.
+
 ## [26.11.1] - 2026-11-04
 
 ### Added
