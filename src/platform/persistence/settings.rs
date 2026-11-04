@@ -363,6 +363,8 @@ pub struct Settings {
     pub left_panel_hidden: bool,
     /// Whether sidebar entries display icons without their labels.
     pub compact_sidebar: bool,
+    /// Pages left out of the sidebar; they stay in the View menu.
+    pub hidden_pages: BTreeSet<crate::workbench::Page>,
     /// Selected application color theme.
     pub theme: crate::shared::ui::theme::ThemeId,
     /// Selected cassette color way for the window and tray icon.
@@ -416,6 +418,7 @@ impl Default for Settings {
             left_panel_width: 240.0,
             left_panel_hidden: false,
             compact_sidebar: false,
+            hidden_pages: BTreeSet::new(),
             theme: Default::default(),
             logo: Default::default(),
             right_panel_width: 320.0,
@@ -457,7 +460,8 @@ impl Settings {
                         album_sort, sort_ascending, discord_application_id, album_layout,
                         compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                         gapless_playback, album_list_column_widths, album_format_badges,
-                        lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo
+                        lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo,
+                        hidden_pages
                  FROM app_settings WHERE id = 1",
                 [],
                 |row| {
@@ -488,6 +492,7 @@ impl Settings {
                         ui_zoom: row.get(20)?,
                         song_list_column_widths: json_column(row, 21)?,
                         logo: json_column(row, 22)?,
+                        hidden_pages: json_column(row, 23)?,
                         ..Self::default()
                     })
                 },
@@ -563,6 +568,19 @@ impl Settings {
         Ok(())
     }
 
+    /// Whether a page can leave the sidebar, which always keeps at least one page.
+    ///
+    /// # Arguments
+    /// * `page` - Page to hide.
+    ///
+    /// # Returns
+    /// `true` when another page is still shown.
+    pub(crate) fn can_hide_page(&self, page: crate::workbench::Page) -> bool {
+        crate::workbench::Page::ALL
+            .iter()
+            .any(|&other| other != page && !self.hidden_pages.contains(&other))
+    }
+
     /// Save application preferences, excluding per-album state and credentials.
     ///
     /// # Errors
@@ -580,9 +598,10 @@ impl Settings {
                     album_sort, sort_ascending, discord_application_id, album_layout,
                     compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                     gapless_playback, album_list_column_widths, album_format_badges,
-                    lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo
+                    lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo,
+                    hidden_pages
                  ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14,
-                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
                  ON CONFLICT(id) DO UPDATE SET
                     music_path=excluded.music_path, window_width=excluded.window_width,
                     window_height=excluded.window_height, startup_view=excluded.startup_view,
@@ -600,7 +619,7 @@ impl Settings {
                     lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled,
                     ui_zoom=excluded.ui_zoom,
                     song_list_column_widths=excluded.song_list_column_widths,
-                    logo=excluded.logo",
+                    logo=excluded.logo, hidden_pages=excluded.hidden_pages",
                 params![
                     self.music_path
                         .as_deref()
@@ -626,6 +645,7 @@ impl Settings {
                     self.ui_zoom,
                     encode_setting(&self.song_list_column_widths)?,
                     encode_setting(&self.logo)?,
+                    encode_setting(&self.hidden_pages)?,
                 ],
             )
             .map(drop)

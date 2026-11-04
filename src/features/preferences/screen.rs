@@ -14,7 +14,7 @@ use crate::{
             theme::{self, ThemeId},
         },
     },
-    workbench::WorkbenchState,
+    workbench::{Page, WorkbenchState},
 };
 use eframe::egui;
 
@@ -436,6 +436,33 @@ fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<App
     ui.label(
         egui::RichText::new(
             "Show only icons in a narrow sidebar. Hover over an icon to see its name.",
+        )
+        .size(12.0)
+        .color(colors.muted),
+    );
+    ui.add_space(12.0);
+    ui.label(egui::RichText::new("Pages in the sidebar").color(colors.text));
+    for page in Page::ALL {
+        let mut shown = !settings.hidden_pages.contains(&page);
+        if ui
+            .add_enabled(
+                !shown || settings.can_hide_page(page),
+                egui::Checkbox::new(&mut shown, page.label()),
+            )
+            .on_disabled_hover_text("The sidebar keeps at least one page")
+            .changed()
+        {
+            if shown {
+                settings.hidden_pages.remove(&page);
+            } else {
+                settings.hidden_pages.insert(page);
+            }
+            *action = Some(AppAction::SaveSettings);
+        }
+    }
+    ui.label(
+        egui::RichText::new(
+            "Hidden pages stay in the View menu. You can also right-click a page in the sidebar to hide it.",
         )
         .size(12.0)
         .color(colors.muted),

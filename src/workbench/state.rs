@@ -1,6 +1,8 @@
 use crate::features::{library::state::LibraryViewState, tag_editor::TagEditor};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Page {
     Home,
     Albums,

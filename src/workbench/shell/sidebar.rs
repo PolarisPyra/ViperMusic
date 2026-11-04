@@ -1,9 +1,10 @@
 use crate::{
     platform::persistence::settings::{Settings, StartupView},
-    shared::ui::theme,
+    shared::ui::{controls::menu_entry, theme},
     workbench::{Page, WorkbenchState},
 };
 use eframe::egui;
+use std::borrow::Cow;
 
 const COMPACT_WIDTH: f32 = 56.0;
 const COMPACT_THRESHOLD: f32 = 140.0;
@@ -67,6 +68,9 @@ pub(in crate::workbench) fn show(
             // Switch the nav layout with the live width so labels do not clip while resizing.
             let compact = resize_state.width < COMPACT_THRESHOLD;
             for page in Page::ALL {
+                if settings.hidden_pages.contains(&page) {
+                    continue;
+                }
                 if let Some(save_error) =
                     nav_item(ui, page, compact, workbench, settings, rip_progress)
                 {
@@ -147,8 +151,8 @@ pub(in crate::workbench) fn show(
     error
 }
 
-/// Draw a sidebar navigation entry with a context menu for choosing the startup page, and the
-/// rip's progress under Rip CD while a CD is ripped.
+/// Draw a sidebar navigation entry with a context menu for choosing the startup page and hiding
+/// the entry, and the rip's progress under Rip CD while a CD is ripped.
 ///
 /// # Returns
 /// A message describing a settings save failure, if any.
@@ -237,24 +241,30 @@ fn nav_item(
     if response.clicked_by(egui::PointerButton::Primary) {
         workbench.page = page;
     }
-    let Some(startup_view) = startup_view else {
-        return error;
-    };
+    let mut changed = false;
     response.context_menu(|ui| {
-        if ui.button(format!("Set {label} as startup view")).clicked() {
-            settings.startup_view = startup_view;
-            if let Err(save_error) = settings.save() {
-                error = Some(format!("Could not save settings: {save_error}"));
+        crate::workbench::style_menu_popup(ui);
+        if let Some(startup_view) = startup_view {
+            let current = settings.startup_view == startup_view;
+            let text = if current {
+                Cow::Borrowed("Current startup view")
+            } else {
+                Cow::Owned(format!("Set {label} as startup view"))
+            };
+            if menu_entry(ui, !current, &text) {
+                settings.startup_view = startup_view;
+                changed = true;
             }
-            ui.close();
         }
-        if settings.startup_view == startup_view {
-            ui.label(
-                egui::RichText::new("Current startup view")
-                    .size(10.0)
-                    .color(colors.subtle),
-            );
+        if menu_entry(ui, settings.can_hide_page(page), "Hide from sidebar") {
+            settings.hidden_pages.insert(page);
+            changed = true;
         }
     });
+    if changed {
+        if let Err(save_error) = settings.save() {
+            error = Some(format!("Could not save settings: {save_error}"));
+        }
+    }
     error
 }
