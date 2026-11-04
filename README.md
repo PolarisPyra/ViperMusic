@@ -20,6 +20,14 @@ Saved passwords, API keys, shared secrets, and session tokens are stored in the 
 cargo run --release
 ```
 
+Discord Rich Presence needs the app's Discord application ID at build time. Put it in a `.env` file at the repository root, which git ignores, or set it in the environment:
+
+```sh
+DISCORD_APPLICATION_ID=<application id>
+```
+
+Release builds get it from the `DISCORD_APPLICATION_ID` repository secret. Builds without it work, but leave Rich Presence out.
+
 The app opens to the Home view. To select or change the music folder, choose **Library → Choose Music Folder**. The selected folder is saved and scanned automatically on later launches. Scan progress appears beside the current page title.
 
 ## Features

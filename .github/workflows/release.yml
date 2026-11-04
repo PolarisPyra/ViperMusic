@@ -142,6 +142,9 @@ jobs:
         run: scripts/set-version.sh "$RELEASE_TAG"
 
       - name: Build
+        env:
+          # Compiled in by build.rs; without it the build has no Discord Rich Presence.
+          DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
         run: scripts/build.sh appimage
 
       - name: Upload workflow artifact
