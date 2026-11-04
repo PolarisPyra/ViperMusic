@@ -5,8 +5,6 @@ pub(crate) enum AppAction {
     ChooseMusicFolder,
     /// Persist application preferences.
     SaveSettings,
-    /// Persist the Discord application ID and application preferences.
-    SaveDiscordApplicationId,
     /// Save SMB connection details and scan the share.
     ConnectSmbShare,
     /// Persist Last.fm API credentials from the preferences drafts.

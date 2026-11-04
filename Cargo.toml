@@ -3,6 +3,9 @@ name = "viper"
 version = "26.11.2"
 edition = "2021"
 
+[build-dependencies]
+dotenvy = "0.15"
+
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui-phosphor = { version = "0.14", features = ["fill"] }

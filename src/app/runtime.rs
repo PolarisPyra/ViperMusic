@@ -44,8 +44,7 @@ impl ViperApp {
         self.discord_presence.update(
             self.settings
                 .discord_rich_presence_enabled
-                .then_some(self.settings.discord_application_id.as_deref())
-                .flatten(),
+                .then_some(self.settings.discord_presence),
             current,
             playback.is_paused(),
             playback.position(),
@@ -125,7 +124,6 @@ impl ViperApp {
         match action {
             AppAction::ChooseMusicFolder => self.choose_folder(),
             AppAction::SaveSettings => self.save_settings(),
-            AppAction::SaveDiscordApplicationId => self.save_discord_application_id(),
             AppAction::ConnectSmbShare => {
                 #[cfg(target_os = "linux")]
                 self.connect_smb_share();

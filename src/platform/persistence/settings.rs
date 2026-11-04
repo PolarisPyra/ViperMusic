@@ -132,7 +132,6 @@ pub struct LastFmSettings {
 
 const LASTFM_KEYRING_SERVICE: &str = "viper-music-lastfm";
 const SAMBA_KEYRING_SERVICE: &str = "viper-music-samba";
-const DISCORD_KEYRING_SERVICE: &str = "viper-music-discord";
 
 fn keyring_entry(service: &str, name: &str) -> io::Result<keyring::Entry> {
     keyring::Entry::new(service, name).map_err(io::Error::other)
@@ -387,10 +386,10 @@ pub struct Settings {
     pub album_last_played: BTreeMap<String, u64>,
     /// Unix timestamps recording when each album was added.
     pub album_added: BTreeMap<String, u64>,
-    /// Optional Discord Rich Presence application ID.
-    pub discord_application_id: Option<String>,
     /// Whether Discord Rich Presence updates are enabled.
     pub discord_rich_presence_enabled: bool,
+    /// Which details the Discord presence shows.
+    pub discord_presence: crate::platform::presence::discord::PresenceOptions,
     /// Whether Last.fm scrobbling is enabled.
     pub lastfm_scrobbling_enabled: bool,
     /// Whether to queue decoders for seamless transitions between tracks.
@@ -430,8 +429,8 @@ impl Default for Settings {
             album_play_counts: BTreeMap::new(),
             album_last_played: BTreeMap::new(),
             album_added: BTreeMap::new(),
-            discord_application_id: None,
             discord_rich_presence_enabled: true,
+            discord_presence: Default::default(),
             lastfm_scrobbling_enabled: false,
             gapless_playback: false,
             album_layout: AlbumLayout::Grid,
@@ -457,7 +456,7 @@ impl Settings {
             .query_row(
                 "SELECT music_path, window_width, window_height, startup_view,
                         left_panel_width, left_panel_hidden, right_panel_width, volume,
-                        album_sort, sort_ascending, discord_application_id, album_layout,
+                        album_sort, sort_ascending, discord_presence, album_layout,
                         compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                         gapless_playback, album_list_column_widths, album_format_badges,
                         lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo,
@@ -479,7 +478,7 @@ impl Settings {
                         volume: row.get(7)?,
                         album_sort: json_column(row, 8)?,
                         sort_ascending: row.get(9)?,
-                        discord_application_id: row.get(10)?,
+                        discord_presence: json_column(row, 10)?,
                         album_layout: json_column(row, 11)?,
                         compact_sidebar: row.get(12)?,
                         theme: json_column(row, 13)?,
@@ -505,20 +504,6 @@ impl Settings {
             None => load_legacy_settings()?.unwrap_or_default(),
         };
 
-        let legacy_discord_id = settings.discord_application_id.take();
-        settings.discord_application_id = load_secret(
-            &keyring_entry(DISCORD_KEYRING_SERVICE, "application-id")?,
-            legacy_discord_id.as_deref(),
-        )?;
-        if legacy_discord_id.is_some() {
-            scrub(
-                &connection,
-                "UPDATE app_settings SET discord_application_id = NULL WHERE id = 1",
-                [],
-                true,
-            )?;
-        }
-
         let mut statement = connection
             .prepare(
                 "SELECT album_key, favorite, rating, play_count, last_played, added
@@ -534,7 +519,6 @@ impl Settings {
 
         if first_run {
             settings.save()?;
-            settings.save_discord_application_id()?;
             let keys: Vec<_> = settings.album_keys().cloned().collect();
             settings.save_album_state(keys.iter().map(String::as_str))?;
             for path in legacy_settings_paths()? {
@@ -599,9 +583,9 @@ impl Settings {
                     compact_sidebar, theme, lyrics_panel_open, discord_rich_presence_enabled,
                     gapless_playback, album_list_column_widths, album_format_badges,
                     lastfm_scrobbling_enabled, ui_zoom, song_list_column_widths, logo,
-                    hidden_pages
+                    hidden_pages, discord_presence
                  ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14,
-                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
                  ON CONFLICT(id) DO UPDATE SET
                     music_path=excluded.music_path, window_width=excluded.window_width,
                     window_height=excluded.window_height, startup_view=excluded.startup_view,
@@ -619,7 +603,8 @@ impl Settings {
                     lastfm_scrobbling_enabled=excluded.lastfm_scrobbling_enabled,
                     ui_zoom=excluded.ui_zoom,
                     song_list_column_widths=excluded.song_list_column_widths,
-                    logo=excluded.logo, hidden_pages=excluded.hidden_pages",
+                    logo=excluded.logo, hidden_pages=excluded.hidden_pages,
+                    discord_presence=excluded.discord_presence",
                 params![
                     self.music_path
                         .as_deref()
@@ -646,21 +631,11 @@ impl Settings {
                     encode_setting(&self.song_list_column_widths)?,
                     encode_setting(&self.logo)?,
                     encode_setting(&self.hidden_pages)?,
+                    encode_setting(&self.discord_presence)?,
                 ],
             )
             .map(drop)
             .map_err(database::database_error)
-    }
-
-    /// Persist the Discord application ID in the OS credential store.
-    ///
-    /// # Errors
-    /// Returns an I/O error if the credential store cannot be updated.
-    pub fn save_discord_application_id(&self) -> io::Result<()> {
-        save_secret(
-            &keyring_entry(DISCORD_KEYRING_SERVICE, "application-id")?,
-            self.discord_application_id.as_deref(),
-        )
     }
 
     /// Persist favorite, rating, and playback history for the given album keys.

@@ -3,7 +3,10 @@ use crate::{
     features::library::state::LibraryFeature,
     platform::{
         persistence::settings::{LastFmSettings, Settings, StartupView},
-        presence::lastfm::LastFmService,
+        presence::{
+            discord::{self, PresenceStatus},
+            lastfm::LastFmService,
+        },
         updates::{UpdateState, RELEASES_URL},
     },
     shared::{
@@ -654,7 +657,15 @@ fn show_services(
     ui.add_space(28.0);
     section_title(ui, "Discord Rich Presence");
     ui.label("Show the currently playing song as a rich presence on your Discord profile.");
-    ui.scope(|ui| {
+    if !discord::available() {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("This build doesn't include Discord Rich Presence.")
+                .size(11.0)
+                .color(colors.muted),
+        );
+    }
+    ui.add_enabled_ui(discord::available(), |ui| {
         ui.spacing_mut().item_spacing.x += 6.0;
         if ui
             .checkbox(
@@ -666,35 +677,44 @@ fn show_services(
             *action = Some(AppAction::SaveSettings);
         }
     });
-    ui.add_space(18.0);
-    ui.label("Discord Application ID");
-    connection_text_edit(
-        ui,
-        &mut preferences.discord_application_id_draft,
-        "Enter your Discord application ID",
-        false,
-    );
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new("Create an application in the Discord Developer Portal and copy its Application ID here.")
-            .size(11.0)
-            .color(colors.muted),
-    );
-    ui.add_space(12.0);
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), 38.0),
-        egui::Layout::right_to_left(egui::Align::Center),
+    ui.add_space(14.0);
+    let mut options = settings.discord_presence;
+    ui.add_enabled_ui(
+        discord::available() && settings.discord_rich_presence_enabled,
         |ui| {
-            if action_button(ui, "Save", true).clicked() {
-                settings.discord_application_id =
-                    match preferences.discord_application_id_draft.trim() {
-                        "" => None,
-                        id => Some(id.to_owned()),
-                    };
-                *action = Some(AppAction::SaveDiscordApplicationId);
-            }
+            ui.label("Show on Discord as “Listening to …”");
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                for (status, label) in [
+                    (PresenceStatus::Song, "The song title"),
+                    (PresenceStatus::Artist, "The artist and album"),
+                    (PresenceStatus::App, "Viper Music"),
+                ] {
+                    if choice_row(ui, label, options.status == status, "Shown on your profile")
+                        .clicked()
+                    {
+                        options.status = status;
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x += 6.0;
+                ui.checkbox(&mut options.show_artist, "Show the artist");
+                ui.checkbox(&mut options.show_album, "Show the album");
+                ui.checkbox(&mut options.show_progress, "Show the time left in the song");
+                ui.checkbox(
+                    &mut options.show_when_paused,
+                    "Keep showing the song while paused",
+                );
+            });
         },
     );
+    if options != settings.discord_presence {
+        settings.discord_presence = options;
+        *action = Some(AppAction::SaveSettings);
+    }
 }
 
 fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option<AppAction>) {

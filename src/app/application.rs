@@ -92,7 +92,6 @@ impl ViperApp {
             .flatten();
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut preferences = PreferencesState::new(
-            settings.discord_application_id.clone().unwrap_or_default(),
             lastfm_settings.api_key.expose_secret().to_owned(),
             lastfm_settings.api_secret.expose_secret().to_owned(),
         );
@@ -263,15 +262,6 @@ impl ViperApp {
             self.toasts
                 .push(format!("Could not save settings: {error}"));
         }
-    }
-
-    /// Persist the Discord application ID to the credential store, then save preferences.
-    pub(crate) fn save_discord_application_id(&mut self) {
-        if let Err(error) = self.settings.save_discord_application_id() {
-            self.toasts
-                .push(format!("Could not save Discord application ID: {error}"));
-        }
-        self.save_settings();
     }
 
     fn save_album_state<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
