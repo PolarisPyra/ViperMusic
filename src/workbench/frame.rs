@@ -47,5 +47,12 @@ pub(crate) fn show(ui: &mut egui::Ui, context: &mut WorkbenchContext<'_>) -> Vec
         context.lastfm_service,
         context.lastfm_settings,
     ));
+    crate::features::tag_editor::show(
+        ctx,
+        context.state,
+        context.library,
+        context.settings,
+        context.toasts,
+    );
     actions
 }

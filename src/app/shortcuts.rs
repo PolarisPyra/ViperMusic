@@ -14,7 +14,7 @@ impl ViperApp {
         let consume = |modifiers, key| ctx.input_mut(|input| input.consume_key(modifiers, key));
         let workbench = &mut self.workbench;
         let popup_open = egui::Popup::is_any_open(ctx);
-        if !workbench.show_preferences
+        if !workbench.dialog_open()
             && (popup_open
                 || workbench.show_queue
                 || workbench.show_shortcuts
@@ -31,7 +31,7 @@ impl ViperApp {
                 workbench.show_album_details = false;
             }
         }
-        if workbench.show_preferences || ctx.egui_wants_keyboard_input() {
+        if workbench.dialog_open() || ctx.egui_wants_keyboard_input() {
             return;
         }
         if !workbench.show_shortcuts {

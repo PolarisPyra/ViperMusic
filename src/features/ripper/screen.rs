@@ -13,7 +13,10 @@ use crate::{
     features::library::{is_smb_path, state::LibraryFeature},
     platform::{desktop, persistence::settings::Settings},
     shared::ui::{
-        controls::{action_button, connection_text_edit, describe_button},
+        controls::{
+            action_button, connection_text_edit, describe_button, field_label, notice,
+            primary_button,
+        },
         theme::{self, icon_font, Palette},
         toasts::Toasts,
     },
@@ -476,14 +479,6 @@ fn lookup_notice(
     }
 }
 
-fn notice(ui: &mut egui::Ui, colors: Palette, icon: &str, tint: egui::Color32, text: &str) {
-    ui.horizontal_top(|ui| {
-        ui.label(egui::RichText::new(icon).font(icon_font(15.0)).color(tint));
-        // Wrap long messages rather than widen the page.
-        ui.add(egui::Label::new(egui::RichText::new(text).size(13.0).color(colors.text)).wrap());
-    });
-}
-
 fn album_fields(ui: &mut egui::Ui, colors: Palette, session: &mut Session) {
     let draft = &mut session.draft;
     let width = ui.available_width().min(520.0);
@@ -529,10 +524,6 @@ fn album_fields(ui: &mut egui::Ui, colors: Palette, session: &mut Session) {
     if draft.disc_number > draft.disc_count {
         draft.disc_number = draft.disc_count;
     }
-}
-
-fn field_label(ui: &mut egui::Ui, colors: Palette, text: &str) {
-    ui.label(egui::RichText::new(text).size(13.0).color(colors.muted));
 }
 
 fn track_list(ui: &mut egui::Ui, colors: Palette, session: &mut Session) {
@@ -1003,31 +994,6 @@ fn card_title(ui: &mut egui::Ui, colors: Palette, icon: &str, title: &str) {
 
 fn card_text(ui: &mut egui::Ui, colors: Palette, text: &str) {
     ui.label(egui::RichText::new(text).size(13.0).color(colors.muted));
-}
-
-/// The page's main action, filled with the accent color.
-fn primary_button(
-    ui: &mut egui::Ui,
-    colors: Palette,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
-    let (fill, text) = if enabled {
-        (colors.accent, colors.on_accent)
-    } else {
-        (colors.surface, colors.muted)
-    };
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(16.0, 8.0);
-        ui.add_enabled(
-            enabled,
-            egui::Button::new(egui::RichText::new(label).size(13.0).strong().color(text))
-                .fill(fill)
-                .corner_radius(7.0)
-                .min_size(egui::vec2(0.0, 36.0)),
-        )
-    })
-    .inner
 }
 
 fn icon_button(

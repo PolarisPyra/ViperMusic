@@ -1,6 +1,6 @@
 use super::{
     album_key,
-    model::{Album, DiscoveredTracks, Library},
+    model::{Album, AlbumIndex, DiscoveredTracks, Library, Track},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -58,8 +58,7 @@ pub fn merge_discovered_tracks(library: &mut Library, discovered: DiscoveredTrac
             album_indices.insert(key, index);
             index
         };
-        Arc::make_mut(&mut library.track_album)
-            .push(Some(super::model::AlbumIndex::new(album_index)));
+        Arc::make_mut(&mut library.track_album).push(Some(AlbumIndex::new(album_index)));
         updated_albums.insert(album_index);
     }
     for album_index in updated_albums {
@@ -111,4 +110,72 @@ pub fn remove_library_tracks(
     );
     library.tracks = Arc::new(tracks);
     remap
+}
+
+/// Replace tracks whose tags changed and move them to the albums their new tags name.
+///
+/// Track indexes stay the same, so queues and playback keep pointing at the same files. An album
+/// left empty is reused when its tracks all move to an album that doesn't exist yet.
+///
+/// # Arguments
+/// * `library` - Library to update.
+/// * `retagged` - Track indexes and the tracks read back from their files.
+pub fn retag_library_tracks(library: &mut Library, retagged: Vec<(usize, Track)>) {
+    let tracks = Arc::make_mut(&mut library.tracks);
+    let track_album = Arc::make_mut(&mut library.track_album);
+    let mut indices = Vec::with_capacity(retagged.len());
+    for (index, track) in retagged {
+        let (Some(slot), Some(album)) = (tracks.get_mut(index), track_album.get(index)) else {
+            continue;
+        };
+        *slot = track;
+        if let Some(album) = album.and_then(|album| library.albums.get_mut(album.get())) {
+            album.tracks.retain(|&track| track != index);
+        }
+        indices.push(index);
+    }
+    let mut album_indices: HashMap<_, _> = library
+        .albums
+        .iter()
+        .enumerate()
+        .filter(|(_, album)| !album.tracks.is_empty())
+        .map(|(index, album)| {
+            (
+                album_key(&album.title, &album.artist, album.lossless),
+                index,
+            )
+        })
+        .collect();
+    let mut updated_albums = HashSet::new();
+    for index in indices {
+        let track = &tracks[index];
+        let previous = track_album[index].map(AlbumIndex::get);
+        if track.album.trim().is_empty() {
+            track_album[index] = None;
+            continue;
+        }
+        let key = album_key(&track.album, &track.album_artist, track.is_lossless());
+        let album_index = *album_indices.entry(key).or_insert_with(|| {
+            let art = previous.and_then(|album| library.albums[album].art.clone());
+            let album = Album::new(track, Vec::new(), art);
+            match previous.filter(|&album| library.albums[album].tracks.is_empty()) {
+                Some(reused) => {
+                    library.albums[reused] = album;
+                    reused
+                }
+                None => {
+                    library.albums.push(album);
+                    library.albums.len() - 1
+                }
+            }
+        });
+        library.albums[album_index].tracks.push(index);
+        track_album[index] = Some(AlbumIndex::new(album_index));
+        updated_albums.insert(album_index);
+    }
+    for album_index in updated_albums {
+        library.albums[album_index]
+            .tracks
+            .sort_by(|&left, &right| tracks[left].playback_order(&tracks[right]));
+    }
 }

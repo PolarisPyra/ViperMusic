@@ -1,6 +1,6 @@
 //! Ripping audio CDs into the library as tagged FLAC files, with tags from MusicBrainz.
 mod drive;
-mod musicbrainz;
+pub(crate) mod musicbrainz;
 mod rip;
 mod screen;
 mod state;

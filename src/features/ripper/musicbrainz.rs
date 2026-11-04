@@ -1,8 +1,8 @@
-//! MusicBrainz: a disc's ID, the releases it belongs to, and their front covers from the Cover Art
-//! Archive.
+//! MusicBrainz: a disc's ID, the releases it belongs to, searching releases by album, and their
+//! front covers from the Cover Art Archive.
 use super::drive::{Toc, LEAD_IN};
 use base64::Engine;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use sha1::{Digest, Sha1};
 use std::{fmt::Write, sync::OnceLock, time::Duration};
 
@@ -133,22 +133,12 @@ pub(crate) fn lookup(toc: &Toc) -> Result<Vec<Release>, String> {
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
-    let response: DiscResponse = response
-        .error_for_status()
-        .map_err(|error| format!("MusicBrainz returned an error: {}", error.without_url()))?
-        .json()
-        .map_err(|error| {
-            format!(
-                "Could not read the MusicBrainz response: {}",
-                error.without_url()
-            )
-        })?;
+    let response: ReleasesResponse = read_json(response)?;
     let track_count = toc.audio_tracks().len();
     let mut releases: Vec<(bool, Release)> = response
         .releases
-        .into_iter()
+        .iter()
         .filter_map(|release| {
-            let disc_count = release.media.len() as u32;
             let (exact, position, medium) = release
                 .media
                 .iter()
@@ -163,44 +153,149 @@ pub(crate) fn lookup(toc: &Toc) -> Result<Vec<Release>, String> {
                         .find(|(_, medium)| medium.tracks.len() == track_count)
                         .map(|(index, medium)| (false, index, medium))
                 })?;
-            let artist = credit(&release.artist_credit);
-            Some((
-                exact,
-                Release {
-                    tracks: medium
-                        .tracks
-                        .iter()
-                        .map(|track| ReleaseTrack {
-                            title: track.title.clone(),
-                            artist: if track.artist_credit.is_empty() {
-                                artist.clone()
-                            } else {
-                                credit(&track.artist_credit)
-                            },
-                            recording_id: track
-                                .recording
-                                .as_ref()
-                                .map(|recording| recording.id.clone()),
-                        })
-                        .collect(),
-                    id: release.id,
-                    title: release.title,
-                    artist,
-                    year: release
-                        .date
-                        .as_deref()
-                        .and_then(|date| date.get(..4))
-                        .and_then(|year| year.parse().ok()),
-                    country: release.country,
-                    disc_number: medium.position.unwrap_or(position as u32 + 1),
-                    disc_count,
-                },
-            ))
+            Some((exact, medium_release(release, position, medium)))
         })
         .collect();
     // Releases with this exact disc come before those that only match its track count.
     releases.sort_by_key(|(exact, _)| !exact);
     Ok(releases.into_iter().map(|(_, release)| release).collect())
+}
+
+/// A release found by searching MusicBrainz for an album, before its tracks are fetched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReleaseMatch {
+    pub(crate) id: String,
+    /// Title, artist, year, country, and size, to tell the release apart from the others found.
+    pub(crate) label: String,
+}
+
+/// Search MusicBrainz for releases of an album.
+///
+/// # Arguments
+/// * `album` - Album title to search for.
+/// * `artist` - Album artist to narrow the search, or empty to search by title alone.
+///
+/// # Returns
+/// Matching releases, best match first; empty when there are none.
+///
+/// # Errors
+/// Returns a message for the user when MusicBrainz cannot be reached or answers with an error.
+pub(crate) fn search(album: &str, artist: &str) -> Result<Vec<ReleaseMatch>, String> {
+    let mut query = format!("release:{}", quoted(album));
+    if !artist.trim().is_empty() {
+        let _ = write!(query, " AND artist:{}", quoted(artist));
+    }
+    let response = client()?
+        .get("https://musicbrainz.org/ws/2/release")
+        .query(&[("query", query.as_str()), ("limit", "15"), ("fmt", "json")])
+        .send()
+        .map_err(|error| network_error("MusicBrainz", error))?;
+    let response: ReleasesResponse = read_json(response)?;
+    Ok(response
+        .releases
+        .into_iter()
+        .map(|release| {
+            let mut label = format!("{} — {}", release.title, credit(&release.artist_credit));
+            for detail in [
+                year(release.date.as_deref()).map(|year| year.to_string()),
+                release.country,
+                (release.media.len() > 1).then(|| format!("{} discs", release.media.len())),
+                Some(format!("{} tracks", release.track_count)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let _ = write!(label, " · {detail}");
+            }
+            ReleaseMatch {
+                id: release.id,
+                label,
+            }
+        })
+        .collect())
+}
+
+/// Every medium of a release with its tracks, in disc order.
+///
+/// # Arguments
+/// * `release_id` - MusicBrainz ID of the release.
+///
+/// # Returns
+/// One [`Release`] per disc.
+///
+/// # Errors
+/// Returns a message for the user when MusicBrainz cannot be reached or answers with an error.
+pub(crate) fn release_media(release_id: &str) -> Result<Vec<Release>, String> {
+    let response = client()?
+        .get(format!("https://musicbrainz.org/ws/2/release/{release_id}"))
+        .query(&[("inc", "artist-credits recordings"), ("fmt", "json")])
+        .send()
+        .map_err(|error| network_error("MusicBrainz", error))?;
+    let release: MbRelease = read_json(response)?;
+    Ok(release
+        .media
+        .iter()
+        .enumerate()
+        .map(|(position, medium)| medium_release(&release, position, medium))
+        .collect())
+}
+
+/// One medium of a release, its tracks credited to the release's artist unless they have their
+/// own.
+fn medium_release(release: &MbRelease, position: usize, medium: &Medium) -> Release {
+    let artist = credit(&release.artist_credit);
+    let tracks = medium
+        .tracks
+        .iter()
+        .map(|track| ReleaseTrack {
+            title: track.title.clone(),
+            artist: if track.artist_credit.is_empty() {
+                artist.clone()
+            } else {
+                credit(&track.artist_credit)
+            },
+            recording_id: track
+                .recording
+                .as_ref()
+                .map(|recording| recording.id.clone()),
+        })
+        .collect();
+    Release {
+        id: release.id.clone(),
+        title: release.title.clone(),
+        artist,
+        year: year(release.date.as_deref()),
+        country: release.country.clone(),
+        disc_number: medium.position.unwrap_or(position as u32 + 1),
+        disc_count: release.media.len() as u32,
+        tracks,
+    }
+}
+
+/// The year of a MusicBrainz date, which may be just a year or a full date.
+fn year(date: Option<&str>) -> Option<u32> {
+    date?.get(..4)?.parse().ok()
+}
+
+/// Text as a quoted search term, so MusicBrainz doesn't read its punctuation as query syntax.
+fn quoted(text: &str) -> String {
+    format!(
+        "\"{}\"",
+        text.trim().replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+fn read_json<T: DeserializeOwned>(response: reqwest::blocking::Response) -> Result<T, String> {
+    response
+        .error_for_status()
+        .map_err(|error| format!("MusicBrainz returned an error: {}", error.without_url()))?
+        .json()
+        .map_err(|error| {
+            format!(
+                "Could not read the MusicBrainz response: {}",
+                error.without_url()
+            )
+        })
 }
 
 /// The release's front cover, about 500 px wide. `None` when the archive has none.
@@ -249,7 +344,7 @@ fn credit(credits: &[Credit]) -> String {
 }
 
 #[derive(Deserialize)]
-struct DiscResponse {
+struct ReleasesResponse {
     #[serde(default)]
     releases: Vec<MbRelease>,
 }
@@ -264,6 +359,8 @@ struct MbRelease {
     artist_credit: Vec<Credit>,
     #[serde(default)]
     media: Vec<Medium>,
+    #[serde(rename = "track-count", default)]
+    track_count: u32,
 }
 
 #[derive(Deserialize)]

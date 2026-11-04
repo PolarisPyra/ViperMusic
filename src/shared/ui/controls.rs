@@ -236,3 +236,77 @@ pub(crate) fn search_field(ui: &mut egui::Ui, query: &mut String) {
         },
     );
 }
+
+/// Paint the label of a form field.
+///
+/// # Arguments
+///
+/// * `ui` - The UI that should contain the label.
+/// * `colors` - Active theme palette.
+/// * `text` - Label text.
+pub(crate) fn field_label(ui: &mut egui::Ui, colors: Palette, text: &str) {
+    ui.label(egui::RichText::new(text).size(13.0).color(colors.muted));
+}
+
+/// Paint a one-line notice with a tinted icon, wrapping long messages.
+///
+/// # Arguments
+///
+/// * `ui` - The UI that should contain the notice.
+/// * `colors` - Active theme palette.
+/// * `icon` - Phosphor icon shown before the text.
+/// * `tint` - Icon color.
+/// * `text` - Notice text.
+pub(crate) fn notice(
+    ui: &mut egui::Ui,
+    colors: Palette,
+    icon: &str,
+    tint: egui::Color32,
+    text: &str,
+) {
+    ui.horizontal_top(|ui| {
+        ui.label(
+            egui::RichText::new(icon)
+                .font(theme::icon_font(15.0))
+                .color(tint),
+        );
+        // Wrap long messages rather than widen the page.
+        ui.add(egui::Label::new(egui::RichText::new(text).size(13.0).color(colors.text)).wrap());
+    });
+}
+
+/// Paint a page or dialog's main action, filled with the accent color.
+///
+/// # Arguments
+///
+/// * `ui` - The UI that should contain the button.
+/// * `colors` - Active theme palette.
+/// * `label` - Text displayed inside the button.
+/// * `enabled` - Whether the button can be clicked.
+///
+/// # Returns
+///
+/// The button response, including whether it was clicked.
+pub(crate) fn primary_button(
+    ui: &mut egui::Ui,
+    colors: Palette,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    let (fill, text) = if enabled {
+        (colors.accent, colors.on_accent)
+    } else {
+        (colors.surface, colors.muted)
+    };
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(16.0, 8.0);
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(label).size(13.0).strong().color(text))
+                .fill(fill)
+                .corner_radius(7.0)
+                .min_size(egui::vec2(0.0, 36.0)),
+        )
+    })
+    .inner
+}

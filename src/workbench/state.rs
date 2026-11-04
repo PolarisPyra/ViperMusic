@@ -1,4 +1,4 @@
-use crate::features::library::state::LibraryViewState;
+use crate::features::{library::state::LibraryViewState, tag_editor::TagEditor};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
@@ -29,6 +29,8 @@ pub(crate) struct WorkbenchState {
     pub(crate) show_album_details: bool,
     pub(crate) show_queue: bool,
     pub(crate) show_shortcuts: bool,
+    /// The album tag editor, while it is open.
+    pub(crate) tag_editor: Option<TagEditor>,
     /// Set when the user asks to exit, so closing the window does not just hide it to the tray.
     pub(crate) quit_requested: bool,
 }
@@ -41,8 +43,14 @@ impl WorkbenchState {
             show_album_details: false,
             show_queue: false,
             show_shortcuts: false,
+            tag_editor: None,
             quit_requested: false,
         }
+    }
+
+    /// Whether a dialog that takes the keyboard, such as preferences or the tag editor, is open.
+    pub(crate) fn dialog_open(&self) -> bool {
+        self.show_preferences || self.tag_editor.is_some()
     }
 
     /// Switch to the albums page with an album's track panel open.

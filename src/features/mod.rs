@@ -7,4 +7,5 @@ pub mod playback;
 pub mod preferences;
 pub(crate) mod ripper;
 pub(crate) mod songs;
+pub(crate) mod tag_editor;
 pub(crate) mod track_menu;

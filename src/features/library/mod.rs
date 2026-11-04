@@ -21,6 +21,6 @@ pub(crate) use audio::{album_key, is_audio_path, is_smb_path};
 pub use model::{
     Album, AlbumIndex, AudioProperties, DiscoveredTracks, Library, ScanProgress, Track,
 };
-pub use modifications::{merge_discovered_tracks, remove_library_tracks};
-pub(crate) use scanner::scan_library_with_auth;
+pub use modifications::{merge_discovered_tracks, remove_library_tracks, retag_library_tracks};
+pub(crate) use scanner::{read_track, scan_library_with_auth};
 pub use scanner::{scan_added_tracks, scan_library};

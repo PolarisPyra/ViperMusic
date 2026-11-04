@@ -1,6 +1,6 @@
 use super::{
-    background::LibraryBackgroundTasks, merge_discovered_tracks, remove_library_tracks, sorting,
-    DiscoveredTracks, Library, ScanProgress,
+    background::LibraryBackgroundTasks, merge_discovered_tracks, remove_library_tracks,
+    retag_library_tracks, sorting, DiscoveredTracks, Library, ScanProgress, Track,
 };
 use crate::platform::persistence::settings::Settings;
 use rayon::prelude::*;
@@ -159,6 +159,37 @@ impl LibraryFeature {
             }
             Err(error) => Some(ScanCompletion::Failed(error)),
         }
+    }
+
+    /// Show tracks whose tags were edited, keeping the edited album selected under its new tags.
+    ///
+    /// # Arguments
+    /// * `album_index` - Album the tracks were edited from.
+    /// * `retagged` - Track indexes and the tracks read back from their files.
+    ///
+    /// # Returns
+    /// The album's key before and after the edit, when the edit renamed the whole album.
+    pub(crate) fn apply_tag_edits(
+        &mut self,
+        album_index: usize,
+        retagged: Vec<(usize, Track)>,
+    ) -> Option<(String, String)> {
+        let first = retagged.first()?.0;
+        let old_key = self.model.albums.get(album_index)?.key.clone();
+        retag_library_tracks(&mut self.model, retagged);
+        self.view.mark_library_changed();
+        let new_index = self.model.track_album.get(first).copied().flatten()?.get();
+        for selection in [
+            &mut self.view.selected_album,
+            &mut self.view.highlighted_album,
+        ] {
+            if *selection == Some(album_index) {
+                *selection = Some(new_index);
+            }
+        }
+        let new_key = &self.model.albums[new_index].key;
+        let moved = new_index == album_index || self.model.albums[album_index].tracks.is_empty();
+        (moved && *new_key != old_key).then(|| (old_key, new_key.clone()))
     }
 
     pub(crate) fn apply_watcher_update(

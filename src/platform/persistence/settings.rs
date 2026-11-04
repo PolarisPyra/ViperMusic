@@ -699,6 +699,35 @@ impl Settings {
         transaction.commit().map_err(database::database_error)
     }
 
+    /// Move an album's favorite, rating, and playback history to a new key after it is renamed.
+    ///
+    /// State the new key already has is kept.
+    ///
+    /// # Arguments
+    /// * `from` - Album key before the rename.
+    /// * `to` - Album key after the rename.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the database transaction fails.
+    pub fn move_album_state(&mut self, from: &str, to: &str) -> io::Result<()> {
+        if self.favorite_albums.remove(from) {
+            self.favorite_albums.insert(to.to_owned());
+        }
+        if let Some(rating) = self.album_ratings.remove(from) {
+            self.album_ratings.entry(to.to_owned()).or_insert(rating);
+        }
+        for counts in [
+            &mut self.album_play_counts,
+            &mut self.album_last_played,
+            &mut self.album_added,
+        ] {
+            if let Some(value) = counts.remove(from) {
+                counts.entry(to.to_owned()).or_insert(value);
+            }
+        }
+        self.save_album_state([from, to])
+    }
+
     fn album_keys(&self) -> impl Iterator<Item = &String> {
         self.favorite_albums
             .iter()

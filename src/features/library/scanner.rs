@@ -500,6 +500,19 @@ fn scan_dir(
     }
 }
 
+/// Read a local track's tags again, as a scan would show them.
+///
+/// # Arguments
+/// * `path` - Local audio file.
+///
+/// # Returns
+/// The track, with its file and folder names standing in for a missing title and album.
+pub(crate) fn read_track(path: PathBuf) -> Track {
+    let mut track = scan_track(path);
+    fill_missing_display_metadata(&mut track);
+    track
+}
+
 fn scan_track(path: PathBuf) -> Track {
     let metadata = read_metadata(&path);
     track_from_metadata(path, metadata)

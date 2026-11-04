@@ -1,8 +1,9 @@
 use super::{grid, list, toolbar};
 use crate::{
     features::{
-        library::{state::LibraryFeature, Album, Library},
+        library::{is_smb_path, state::LibraryFeature, Album, Library},
         playback::Playback,
+        tag_editor::TagEditor,
     },
     platform::{
         desktop,
@@ -233,7 +234,7 @@ pub(super) fn show_album_context_menu(
             .first()
             .and_then(|&track| screen.library.model.tracks.get(track))
             .and_then(|track| track.path.parent())
-            .filter(|folder| !crate::features::library::is_smb_path(folder));
+            .filter(|folder| !is_smb_path(folder));
         if menu_entry(ui, folder.is_some(), "Open in file browser") {
             if let Some(folder) = folder {
                 if let Err(error) = desktop::open_folder(folder) {
@@ -243,6 +244,11 @@ pub(super) fn show_album_context_menu(
                     ));
                 }
             }
+        }
+        // Tags can only be written to files on this computer.
+        let editable = folder.is_some();
+        if menu_entry(ui, editable, "Edit metadata") {
+            screen.workbench.tag_editor = TagEditor::new(screen.library, index);
         }
     });
 }
