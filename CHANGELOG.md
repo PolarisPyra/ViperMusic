@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.1] - 2026-11-04
+
+### Added
+
+- Rip CD now finds and rips from CD drives on Windows and macOS, not only Linux, without needing cdparanoia.
+
 ## [26.11.0] - 2026-11-03
 
 ### Added
