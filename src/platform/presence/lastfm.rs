@@ -1,14 +1,23 @@
-use crate::{features::library::Track, platform::persistence::settings::LastFmSettings};
+use crate::{
+    features::{library::Track, playback::Playback},
+    platform::persistence::settings::LastFmSettings,
+};
 use secrecy::ExposeSecret;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex, MutexGuard, PoisonError,
+    },
     thread,
     time::Duration,
 };
 
 const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
+
+/// How often the scrobbler thread checks playback for a new song or the scrobble point.
+const TICK: Duration = Duration::from_secs(1);
 
 enum Event {
     Token(Result<String, String>),
@@ -34,32 +43,94 @@ pub(crate) struct LastFmService {
     sender: Sender<Event>,
     receiver: Receiver<Event>,
     sign_in: SignIn,
+    scrobbler: Arc<Mutex<Scrobbler>>,
+    status: String,
+}
+
+/// Reports playback to Last.fm from its own thread. It runs apart from the window, which draws no
+/// frames while it is minimized, so songs played then are still scrobbled.
+struct Scrobbler {
+    sender: Sender<Event>,
+    enabled: bool,
+    settings: LastFmSettings,
     current_track: Option<usize>,
     last_position: Duration,
     now_playing_track: Option<usize>,
     scrobbled: bool,
     track_started_at: u64,
-    status: String,
 }
 
-impl Default for LastFmService {
-    fn default() -> Self {
+impl LastFmService {
+    /// Start the thread that reports playback. It stops once the service is dropped.
+    ///
+    /// # Arguments
+    /// * `playback` - Shared playback state to report.
+    pub(crate) fn new(playback: &Arc<Mutex<Playback>>) -> Self {
         let (sender, receiver) = mpsc::channel();
-        Self {
-            sender,
-            receiver,
-            sign_in: SignIn::Idle,
+        let scrobbler = Arc::new(Mutex::new(Scrobbler {
+            sender: sender.clone(),
+            enabled: false,
+            settings: LastFmSettings::default(),
             current_track: None,
             last_position: Duration::ZERO,
             now_playing_track: None,
             scrobbled: false,
             track_started_at: 0,
+        }));
+        let worker_playback = Arc::clone(playback);
+        let worker_scrobbler = Arc::downgrade(&scrobbler);
+        let spawned = thread::Builder::new()
+            .name("lastfm-scrobbler".to_owned())
+            .spawn(move || {
+                while let Some(scrobbler) = worker_scrobbler.upgrade() {
+                    let playback = worker_playback
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    let current = playback
+                        .current_track()
+                        .map(|(index, track)| (index, track.clone()));
+                    let position = playback.position();
+                    drop(playback);
+                    scrobbler
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .update_playback(
+                            current.as_ref().map(|(index, track)| (*index, track)),
+                            position,
+                        );
+                    drop(scrobbler);
+                    thread::sleep(TICK);
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("Last.fm scrobbler could not start: {error}");
+        }
+        Self {
+            sender,
+            receiver,
+            sign_in: SignIn::Idle,
+            scrobbler,
             status: "Not connected".to_owned(),
         }
     }
-}
 
-impl LastFmService {
+    fn scrobbler(&self) -> MutexGuard<'_, Scrobbler> {
+        self.scrobbler
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Give the scrobbler thread the current settings.
+    ///
+    /// # Arguments
+    /// * `enabled` - Whether the user turned scrobbling on.
+    /// * `settings` - Credentials and session to report with.
+    pub(crate) fn configure(&self, enabled: bool, settings: &LastFmSettings) {
+        let mut scrobbler = self.scrobbler();
+        scrobbler.enabled = enabled;
+        scrobbler.settings.clone_from(settings);
+    }
+
     pub(crate) fn status(&self) -> &str {
         &self.status
     }
@@ -112,7 +183,7 @@ impl LastFmService {
 
     pub(crate) fn disconnect(&mut self) {
         self.sign_in = SignIn::Idle;
-        self.now_playing_track = None;
+        self.scrobbler().now_playing_track = None;
         self.status = "Not connected".to_owned();
     }
 
@@ -143,7 +214,7 @@ impl LastFmService {
                     settings.username = Some(username.clone());
                     self.sign_in = SignIn::Idle;
                     self.status = format!("Connected as {username}");
-                    self.now_playing_track = None;
+                    self.scrobbler().now_playing_track = None;
                     changed = true;
                 }
                 Event::Session(Err(error)) => {
@@ -160,14 +231,10 @@ impl LastFmService {
         }
         changed
     }
+}
 
-    pub(crate) fn update_playback(
-        &mut self,
-        enabled: bool,
-        settings: &LastFmSettings,
-        current: Option<(usize, &Track)>,
-        position: Duration,
-    ) {
+impl Scrobbler {
+    fn update_playback(&mut self, current: Option<(usize, &Track)>, position: Duration) {
         let track_index = current.map(|(index, _)| index);
         let track = current.map(|(_, track)| track);
         if track_index != self.current_track {
@@ -188,7 +255,7 @@ impl LastFmService {
         let Some((track_index, track)) = current else {
             return;
         };
-        if !enabled || settings.session_key.is_none() {
+        if !self.enabled || self.settings.session_key.is_none() {
             return;
         }
 
@@ -196,7 +263,7 @@ impl LastFmService {
             self.now_playing_track = Some(track_index);
             let sender = self.sender.clone();
             let track = track.clone();
-            let credentials = settings.clone();
+            let credentials = self.settings.clone();
             thread::spawn(move || {
                 let result = submit_now_playing(&credentials, &track);
                 let _ = sender.send(Event::NowPlaying(result));
@@ -220,7 +287,7 @@ impl LastFmService {
         let timestamp = self.track_started_at;
         let sender = self.sender.clone();
         let track = track.clone();
-        let credentials = settings.clone();
+        let credentials = self.settings.clone();
         thread::spawn(move || {
             let result = submit_scrobble(&credentials, &track, timestamp);
             let _ = sender.send(Event::Scrobble(result));

@@ -122,6 +122,7 @@ impl ViperApp {
         let playback = Arc::new(Mutex::new(playback));
         Playback::spawn_driver(&playback);
         let discord_presence = DiscordPresenceService::new(&playback);
+        let lastfm_service = LastFmService::new(&playback);
         #[cfg(target_os = "linux")]
         let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback));
         let mut app = Self {
@@ -133,7 +134,7 @@ impl ViperApp {
             settings,
             preferences,
             discord_presence,
-            lastfm_service: LastFmService::default(),
+            lastfm_service,
             lastfm_settings,
             last_observed_track: None,
             toasts: Toasts::default(),

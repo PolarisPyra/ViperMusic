@@ -12,9 +12,9 @@ impl Default for ViperApp {
 }
 
 impl ViperApp {
-    /// Hand the library to the playback driver and the settings to Discord, and report playback
-    /// to toasts and Last.fm. The driver and presence threads keep going while the window draws no
-    /// frames, so this needs no repaints of its own.
+    /// Hand the library to the playback driver and the settings to Last.fm and Discord, and report
+    /// playback errors as toasts. The driver, scrobbler, and presence threads keep going while the
+    /// window draws no frames, so this needs no repaints of its own.
     fn update_playback(&mut self) {
         let playback_handle = Arc::clone(&self.playback);
         let mut playback = playback_handle
@@ -33,14 +33,9 @@ impl ViperApp {
                     .push(format!("Could not save Last.fm session: {error}"));
             }
         }
-        let current = playback
-            .current
-            .and_then(|index| Some((index, self.library.model.tracks.get(index)?)));
-        self.lastfm_service.update_playback(
+        self.lastfm_service.configure(
             self.settings.lastfm_scrobbling_enabled,
             &self.lastfm_settings,
-            current,
-            playback.position(),
         );
         self.discord_presence.set_options(
             self.settings
