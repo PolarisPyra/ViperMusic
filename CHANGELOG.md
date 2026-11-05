@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.5] - 2026-11-05
+
+### Fixed
+
+- Songs you play while the window is minimized are now scrobbled to Last.fm and show as now playing there.
+
 ## [26.11.4] - 2026-11-05
 
 ### Fixed
