@@ -12,8 +12,9 @@ impl Default for ViperApp {
 }
 
 impl ViperApp {
-    /// Hand the library to the playback driver, and report playback to toasts, Last.fm, and
-    /// Discord. The driver thread advances tracks, so this needs no repaints of its own.
+    /// Hand the library to the playback driver and the settings to Discord, and report playback
+    /// to toasts and Last.fm. The driver and presence threads keep going while the window draws no
+    /// frames, so this needs no repaints of its own.
     fn update_playback(&mut self) {
         let playback_handle = Arc::clone(&self.playback);
         let mut playback = playback_handle
@@ -41,13 +42,10 @@ impl ViperApp {
             current,
             playback.position(),
         );
-        self.discord_presence.update(
+        self.discord_presence.set_options(
             self.settings
                 .discord_rich_presence_enabled
                 .then_some(self.settings.discord_presence),
-            current,
-            playback.is_paused(),
-            playback.position(),
         );
     }
 

@@ -1,4 +1,4 @@
-use crate::platform::presence::discord::DiscordPresence;
+use crate::platform::presence::discord::DiscordPresenceService;
 use crate::platform::presence::lastfm::LastFmService;
 use crate::{
     features::playback::Playback,
@@ -36,7 +36,7 @@ pub struct ViperApp {
     pub(crate) ripper: RipperFeature,
     pub(crate) settings: Settings,
     pub(crate) preferences: PreferencesState,
-    pub(super) discord_presence: DiscordPresence,
+    pub(super) discord_presence: DiscordPresenceService,
     pub(crate) lastfm_service: LastFmService,
     pub(crate) lastfm_settings: LastFmSettings,
     pub(super) last_observed_track: Option<usize>,
@@ -121,6 +121,7 @@ impl ViperApp {
         playback.volume = settings.volume;
         let playback = Arc::new(Mutex::new(playback));
         Playback::spawn_driver(&playback);
+        let discord_presence = DiscordPresenceService::new(&playback);
         #[cfg(target_os = "linux")]
         let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback));
         let mut app = Self {
@@ -131,7 +132,7 @@ impl ViperApp {
             ripper: RipperFeature::default(),
             settings,
             preferences,
-            discord_presence: DiscordPresence::default(),
+            discord_presence,
             lastfm_service: LastFmService::default(),
             lastfm_settings,
             last_observed_track: None,

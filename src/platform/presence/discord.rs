@@ -1,10 +1,20 @@
-use crate::features::library::Track;
+use crate::features::{library::Track, playback::Playback};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::{
+        mpsc::{self, RecvTimeoutError, Sender},
+        Arc, Mutex, PoisonError,
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 /// Discord application the presence is published as, compiled in by `build.rs`.
 const APPLICATION_ID: Option<&str> = option_env!("DISCORD_APPLICATION_ID");
+
+/// How often the presence thread checks playback for a new song or a pause.
+const TICK: Duration = Duration::from_secs(1);
 
 /// Whether this build can publish a Discord presence.
 pub(crate) const fn available() -> bool {
@@ -79,7 +89,82 @@ impl PresenceKey {
     }
 }
 
-pub(crate) struct DiscordPresence {
+/// Publishes the playing song to Discord from its own thread. It runs apart from the window,
+/// which draws no frames while it is minimized, so the presence keeps up with playback.
+pub(crate) struct DiscordPresenceService {
+    options: Option<PresenceOptions>,
+    sender: Option<Sender<Option<PresenceOptions>>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl DiscordPresenceService {
+    /// Start the thread that publishes the playing song. It stops once the service is dropped.
+    ///
+    /// # Arguments
+    /// * `playback` - Shared playback state to report.
+    pub(crate) fn new(playback: &Arc<Mutex<Playback>>) -> Self {
+        let playback = Arc::clone(playback);
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("discord-presence".to_owned())
+            .spawn(move || {
+                let mut presence = DiscordPresence::default();
+                let mut options = None;
+                loop {
+                    match receiver.recv_timeout(TICK) {
+                        Ok(changed) => options = changed,
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                    let playback = playback.lock().unwrap_or_else(PoisonError::into_inner);
+                    let current = playback
+                        .current_track()
+                        .map(|(index, track)| (index, track.clone()));
+                    let (paused, position) = (playback.is_paused(), playback.position());
+                    drop(playback);
+                    presence.update(
+                        options,
+                        current.as_ref().map(|(index, track)| (*index, track)),
+                        paused,
+                        position,
+                    );
+                }
+            })
+            .inspect_err(|error| eprintln!("Discord presence could not start: {error}"))
+            .ok();
+        Self {
+            options: None,
+            sender: Some(sender),
+            worker,
+        }
+    }
+
+    /// Change what the presence shows.
+    ///
+    /// # Arguments
+    /// * `options` - What to show, or `None` while the presence is turned off.
+    pub(crate) fn set_options(&mut self, options: Option<PresenceOptions>) {
+        if self.options == options {
+            return;
+        }
+        self.options = options;
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(options);
+        }
+    }
+}
+
+impl Drop for DiscordPresenceService {
+    fn drop(&mut self) {
+        // Closing the channel stops the thread, which clears the presence on its way out.
+        self.sender = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct DiscordPresence {
     client: Option<DiscordIpcClient>,
     enabled: bool,
     published: Option<PresenceKey>,
@@ -107,7 +192,7 @@ impl DiscordPresence {
     /// * `current` - Index and details of the playing track.
     /// * `paused` - Whether playback is paused.
     /// * `position` - How far into the track playback is.
-    pub(crate) fn update(
+    fn update(
         &mut self,
         options: Option<PresenceOptions>,
         current: Option<(usize, &Track)>,

@@ -241,6 +241,12 @@ impl Playback {
             })
     }
 
+    /// Return the index and details of the current track.
+    pub(crate) fn current_track(&self) -> Option<(usize, &Track)> {
+        let index = self.current?;
+        Some((index, self.tracks.get(index)?))
+    }
+
     /// Seek within the current track, clamping the position to its known duration.
     ///
     /// # Arguments
