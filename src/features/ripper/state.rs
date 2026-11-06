@@ -214,7 +214,7 @@ impl RipperFeature {
                     self.probe = Probe::Idle {
                         due: Instant::now() + PROBE_INTERVAL,
                     };
-                    self.drives_changed(drives);
+                    self.drives_changed(drives, ctx);
                     ctx.request_repaint_after(PROBE_INTERVAL);
                 }
                 Err(TryRecvError::Empty) => {}
@@ -227,7 +227,7 @@ impl RipperFeature {
         }
     }
 
-    fn drives_changed(&mut self, drives: Vec<(Drive, DriveStatus)>) {
+    fn drives_changed(&mut self, drives: Vec<(Drive, DriveStatus)>, ctx: &Repaint) {
         let before = self.status().cloned();
         if !self
             .selected
@@ -243,9 +243,9 @@ impl RipperFeature {
         let removed =
             before == Some(DriveStatus::DiscPresent) && now != Some(DriveStatus::DiscPresent);
         match &self.phase {
-            Phase::Waiting if now == Some(DriveStatus::DiscPresent) => self.read_disc(),
+            Phase::Waiting if now == Some(DriveStatus::DiscPresent) => self.read_disc(ctx),
             // A new disc replaces a finished rip or a disc that could not be read.
-            Phase::Done(_) | Phase::Failed(_) if inserted => self.read_disc(),
+            Phase::Done(_) | Phase::Failed(_) if inserted => self.read_disc(ctx),
             Phase::Ready(_) | Phase::Failed(_) if removed => self.phase = Phase::Waiting,
             _ => {}
         }
@@ -282,12 +282,16 @@ impl RipperFeature {
     }
 
     /// Read the disc in the selected drive again, after a failure or to start over.
-    pub(crate) fn read_disc(&mut self) {
+    ///
+    /// # Arguments
+    /// * `ctx` - Wakes the app when the disc has been read.
+    pub(crate) fn read_disc(&mut self, ctx: &Repaint) {
         let Some(drive) = self.selected.clone() else {
             self.phase = Phase::Waiting;
             return;
         };
         let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
         let spawned = thread::Builder::new()
             .name("viper-cd-read".to_owned())
             .spawn(move || {
@@ -299,6 +303,7 @@ impl RipperFeature {
                         DiscRead { toc, lookup }
                     });
                 let _ = sender.send(read);
+                repaint.request_repaint();
             });
         self.phase = match spawned {
             Ok(_) => Phase::Reading(receiver),
@@ -330,16 +335,20 @@ impl RipperFeature {
 
     /// Start ripping the chosen tracks into `root`.
     pub(crate) fn start_rip(&mut self, ctx: &Repaint, root: &Path) {
-        let Phase::Ready(session) = std::mem::replace(&mut self.phase, Phase::Waiting) else {
-            return;
+        self.phase = match std::mem::replace(&mut self.phase, Phase::Waiting) {
+            Phase::Ready(session) => start(session, root, self.eject_when_done, ctx),
+            phase => phase,
         };
-        self.phase = start(session, root, self.eject_when_done, ctx);
     }
 
     /// Rip the tracks that failed again, keeping those that worked.
     pub(crate) fn retry_failed(&mut self, ctx: &Repaint) {
-        let Phase::Done(rip) = std::mem::replace(&mut self.phase, Phase::Waiting) else {
-            return;
+        let rip = match std::mem::replace(&mut self.phase, Phase::Waiting) {
+            Phase::Done(rip) => rip,
+            phase => {
+                self.phase = phase;
+                return;
+            }
         };
         let Rip {
             mut session,
@@ -359,16 +368,20 @@ impl RipperFeature {
 
     /// Go back to editing the disc's tags after a rip, to rip it again.
     pub(crate) fn edit_again(&mut self) {
-        if let Phase::Done(rip) = std::mem::replace(&mut self.phase, Phase::Waiting) {
-            self.phase = Phase::Ready(rip.session);
-        }
+        self.phase = match std::mem::replace(&mut self.phase, Phase::Waiting) {
+            Phase::Done(rip) => Phase::Ready(rip.session),
+            phase => phase,
+        };
     }
 
     pub(crate) fn cancel(&mut self) {
-        if let Phase::Ripping(rip) = std::mem::replace(&mut self.phase, Phase::Waiting) {
-            rip.cancel.store(true, Ordering::Relaxed);
-            self.phase = Phase::Cancelling(rip);
-        }
+        self.phase = match std::mem::replace(&mut self.phase, Phase::Waiting) {
+            Phase::Ripping(rip) => {
+                rip.cancel.store(true, Ordering::Relaxed);
+                Phase::Cancelling(rip)
+            }
+            phase => phase,
+        };
     }
 
     /// Eject the disc, or close the tray when it is open.
@@ -767,5 +780,42 @@ fn fetch_cover(ctx: &Repaint, release_id: String) -> Cover {
     match spawned {
         Ok(_) => Cover::Loading { release_id, job },
         Err(_) => Cover::Unavailable { release_id },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Drive, Phase, RipperFeature};
+    use crate::shared::{repaint::Repaint, ui::toasts::Toasts};
+    use std::{path::Path, time::Duration};
+
+    #[test]
+    fn actions_for_another_phase_leave_it_alone() {
+        let (repaint, _wakes) = Repaint::new();
+        let mut ripper = RipperFeature {
+            phase: Phase::Failed("The disc could not be read.".to_owned()),
+            ..RipperFeature::default()
+        };
+        ripper.cancel();
+        ripper.edit_again();
+        ripper.retry_failed(&repaint);
+        ripper.start_rip(&repaint, Path::new("music"));
+        assert!(matches!(ripper.phase, Phase::Failed(_)));
+    }
+
+    #[test]
+    fn reading_a_disc_wakes_the_app_when_it_is_done() {
+        let (repaint, wakes) = Repaint::new();
+        let mut ripper = RipperFeature {
+            selected: Some(Drive::Device {
+                id: "missing-drive".to_owned(),
+                name: "Missing drive".to_owned(),
+            }),
+            ..RipperFeature::default()
+        };
+        ripper.read_disc(&repaint);
+        assert!(wakes.woke_within(Duration::from_secs(5)));
+        ripper.poll(&repaint, &mut Toasts::default());
+        assert!(matches!(ripper.phase, Phase::Failed(_)));
     }
 }

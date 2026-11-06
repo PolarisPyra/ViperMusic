@@ -103,3 +103,18 @@ impl RepaintReceiver {
         }
     }
 }
+
+#[cfg(test)]
+impl RepaintReceiver {
+    /// Whether a wake arrives within `timeout`.
+    pub(crate) fn woke_within(&self, timeout: Duration) -> bool {
+        let end = Instant::now() + timeout;
+        while Instant::now() < end {
+            if self.wakes.try_recv().is_ok() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+}

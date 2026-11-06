@@ -83,7 +83,7 @@ pub(crate) fn render(
                         "Try again",
                         true,
                         colors,
-                        click(cx, |app, _, _| app.ripper.read_disc()),
+                        click(cx, |app, _, _| app.ripper.read_disc(&app.repaint)),
                     ))
                     .child(action_button(
                         "ripper-eject-failed",
