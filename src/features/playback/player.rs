@@ -190,9 +190,7 @@ impl Playback {
             return IDLE_TICK;
         }
         let tracks = Arc::clone(&self.tracks);
-        if self.is_playing() {
-            self.advance_if_finished(&tracks);
-        }
+        self.advance_if_finished(&tracks);
         let gapless = self.gapless && self.repeat_mode != RepeatMode::One;
         self.update_gapless(&tracks, gapless);
         if self.gapless_preparation.is_some() {
@@ -400,7 +398,9 @@ impl Playback {
     /// # Arguments
     /// * `tracks` - Current library tracks.
     fn advance_if_finished(&mut self, tracks: &[Track]) {
-        if self.is_paused() {
+        // A paused track can't reach its end, but the audio thread may have moved on to a
+        // scheduled gapless track just before the pause. Follow it there without starting anything.
+        if self.is_paused() && self.scheduled_track.is_none() {
             return;
         }
         let completed = self.current_completion.as_ref().is_some_and(|receiver| {
@@ -415,7 +415,7 @@ impl Playback {
         if let Some(finished_track) = self.current {
             self.push_history(finished_track);
         }
-        if self.repeat_mode == RepeatMode::One {
+        if self.repeat_mode == RepeatMode::One && !self.is_paused() {
             self.stop_current();
             if let Some(track) = self.history.pop_back() {
                 self.start_track(tracks, track);
@@ -1045,11 +1045,11 @@ impl Drop for Playback {
 
 #[cfg(test)]
 mod tests {
-    use super::{Playback, RepeatMode};
+    use super::{Playback, QueueSource, RepeatMode, ScheduledTrack};
     use crate::features::library::Track;
     use std::{
         path::PathBuf,
-        sync::{atomic::AtomicBool, Arc},
+        sync::{atomic::AtomicBool, mpsc, Arc},
     };
 
     fn track(number: usize) -> Track {
@@ -1066,6 +1066,43 @@ mod tests {
             audio: Default::default(),
             metadata_missing: false,
         }
+    }
+
+    /// Track 1 scheduled after track 0 and already reached by the audio thread, as when track 0
+    /// has just ended. The returned sender keeps track 1's completion pending.
+    fn playing_into_gapless_track() -> (Playback, mpsc::Sender<()>) {
+        let (finished, completion) = mpsc::channel();
+        finished.send(()).unwrap();
+        let (next_finished, next_completion) = mpsc::channel();
+        let (queue_input, _queue_output) = rodio::queue::queue(true);
+        let mut playback = Playback::default();
+        playback.tracks = Arc::new((0..2).map(track).collect());
+        playback.current = Some(0);
+        playback.current_completion = Some(completion);
+        playback.current_started = Some(Arc::new(AtomicBool::new(true)));
+        playback.queue_input = Some(queue_input);
+        playback.auto_queue = [1].into();
+        playback.scheduled_track = Some(ScheduledTrack {
+            index: 1,
+            source: QueueSource::Automatic,
+            completion: next_completion,
+            position_ns: Arc::default(),
+            started: Arc::new(AtomicBool::new(true)),
+            consume_queue: true,
+        });
+        (playback, next_finished)
+    }
+
+    #[test]
+    fn pausing_as_a_gapless_track_starts_shows_that_track() {
+        let (mut playback, _next_finished) = playing_into_gapless_track();
+        let (player, _output) = rodio::Player::new();
+        player.pause();
+        playback.player = Some(player);
+        playback.tick();
+        assert_eq!(playback.current, Some(1));
+        assert!(playback.is_paused());
+        assert!(playback.auto_queue.is_empty());
     }
 
     #[test]
