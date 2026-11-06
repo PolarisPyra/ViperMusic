@@ -1,63 +1,25 @@
-use super::{Page, WorkbenchContext};
-use crate::{features, shared::action::AppAction};
-use eframe::egui;
+use super::Page;
+use crate::{app::ViperApp, features};
+use gpui::{prelude::*, AnyElement, Context, Window};
 
-pub(crate) fn show(ui: &mut egui::Ui, context: &mut WorkbenchContext<'_>) -> Option<AppAction> {
-    match context.state.page {
-        Page::Home => features::home::show(
-            ui,
-            context.state,
-            context.library,
-            context.playback,
-            context.settings,
-            context.artwork_cache,
-        ),
-        Page::Albums => {
-            features::albums::track_list::show(
-                ui,
-                context.library,
-                context.playback,
-                context.lyrics,
-                context.settings,
-                context.artwork_cache,
-                context.toasts,
-            );
-            features::albums::show(
-                ui,
-                features::albums::AlbumScreen {
-                    workbench: context.state,
-                    library: context.library,
-                    playback: context.playback,
-                    settings: context.settings,
-                    artwork_cache: context.artwork_cache,
-                    toasts: context.toasts,
-                },
-            );
-            None
-        }
-        Page::Songs => {
-            features::songs::show(
-                ui,
-                context.state,
-                context.library,
-                context.playback,
-                context.settings,
-                context.toasts,
-            );
-            None
-        }
-        Page::Ripper => {
-            features::ripper::show(
-                ui,
-                features::ripper::RipperScreen {
-                    ripper: context.ripper,
-                    workbench: context.state,
-                    library: context.library,
-                    settings: context.settings,
-                    toasts: context.toasts,
-                },
-            );
-            None
-        }
+/// Draw the page chosen in the sidebar.
+///
+/// # Arguments
+/// * `app` - Application state shared with the views.
+/// * `window` - Window being drawn.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The page element.
+pub(super) fn render(
+    app: &mut ViperApp,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    match app.workbench.page {
+        Page::Home => features::home::render(app, window, cx).into_any_element(),
+        Page::Albums => features::albums::render(app, window, cx).into_any_element(),
+        Page::Songs => features::songs::render(app, window, cx).into_any_element(),
+        Page::Ripper => features::ripper::render(app, window, cx).into_any_element(),
     }
 }

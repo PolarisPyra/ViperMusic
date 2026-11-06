@@ -1,4 +1,3 @@
-use eframe::egui;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
@@ -132,27 +131,23 @@ impl LogoColorway {
     }
 }
 
-/// Convert a logo into the window icon data egui sends to the window manager.
+/// Convert a logo into the window icon sent to the window manager.
 ///
 /// # Arguments
 /// * `logo` - Source image, scaled to 256 pixels per side.
-pub(crate) fn window_icon(logo: &DynamicImage) -> egui::IconData {
-    let icon = logo
-        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
-        .into_rgba8();
-    let (width, height) = icon.dimensions();
-    egui::IconData {
-        rgba: icon.into_raw(),
-        width,
-        height,
-    }
+///
+/// # Returns
+/// The icon's pixels.
+pub(crate) fn window_icon(logo: &DynamicImage) -> image::RgbaImage {
+    logo.resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+        .into_rgba8()
 }
 
 /// Point the installed launcher at an icon of `colorway`, so the dock, app menu, and title bar show it.
 ///
-/// HACK: winit cannot set a Wayland window's icon yet (the `xdg-toplevel-icon` protocol), so the
-/// desktop only learns the icon from the launcher. Once winit supports that protocol, set the icon on
-/// the window instead and remove this function, the window reopen in `AppWindow::logic`, and the
+/// HACK: GPUI cannot set a Wayland window's icon yet (the `xdg-toplevel-icon` protocol), so the
+/// desktop only learns the icon from the launcher. Once GPUI supports that protocol, set the icon on
+/// the window instead and remove this function, the window reopen in `ViperApp::logic`, and the
 /// icon handling in `scripts/build.sh`.
 ///
 /// Every change installs the icon under a name never used before, because the window manager and

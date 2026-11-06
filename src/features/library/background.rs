@@ -2,7 +2,7 @@ use super::{
     watcher::{FileChange, FileWatcher},
     DiscoveredTracks, Library, ScanProgress,
 };
-use eframe::egui;
+use crate::shared::repaint::Repaint;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -57,7 +57,12 @@ impl LibraryBackgroundTasks {
         Ok(())
     }
 
-    pub(crate) fn poll_artwork(&mut self, ctx: &egui::Context) -> Vec<(usize, Arc<[u8]>)> {
+    /// Whether album covers are still being read from the library.
+    pub(crate) fn loading_artwork(&self) -> bool {
+        self.artwork_receiver.is_some()
+    }
+
+    pub(crate) fn poll_artwork(&mut self, ctx: &Repaint) -> Vec<(usize, Arc<[u8]>)> {
         let mut artwork = Vec::new();
         let mut finished = false;
         if let Some(receiver) = &self.artwork_receiver {
@@ -85,7 +90,7 @@ impl LibraryBackgroundTasks {
         &mut self,
         root: Option<&Path>,
         scanning: bool,
-        ctx: &egui::Context,
+        ctx: &Repaint,
     ) -> Vec<WatcherEvent> {
         let mut events = Vec::new();
         let root = root.filter(|root| !super::is_smb_path(root));

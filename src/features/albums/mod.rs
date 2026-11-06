@@ -5,4 +5,4 @@ mod screen;
 mod toolbar;
 pub(crate) mod track_list;
 
-pub(crate) use screen::{show, AlbumScreen};
+pub(crate) use screen::render;

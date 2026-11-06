@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             instance = single_instance::SingleInstance::new("viper-music")?;
         }
     }
-    viper::run()?;
+    viper::run();
     // Restarting into an installed update: release the instance lock, then become the new copy.
     if let Some(appimage) = viper::restart_target() {
         drop(instance);

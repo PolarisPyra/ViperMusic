@@ -1,197 +1,181 @@
 use super::screen::{
-    album_format_label, describe_album, open_album, paint_cover_with_opacity, paint_format_badge,
-    play_album, show_album_context_menu, show_shimmer_rect, AlbumScreen,
+    album_cover, album_description, album_interactions, prefetch_covers, shimmer, PREFETCH_ROWS,
 };
-use crate::shared::ui::theme;
-use eframe::egui;
+use crate::{
+    app::ViperApp,
+    shared::ui::{
+        controls::sz,
+        theme::{self, Palette},
+    },
+};
+use gpui::{div, prelude::*, uniform_list, AnyElement, Context, ScrollStrategy};
+use gpui_component::scroll::ScrollableElement;
+use std::{ops::Range, sync::Arc};
 
-pub(super) fn show_album_rows(
-    ctx: &egui::Context,
-    ui: &mut egui::Ui,
-    screen: &mut AlbumScreen<'_>,
-    albums: &[usize],
-    viewport: egui::Rect,
-    width: f32,
-    scroll_to: Option<usize>,
-) {
-    const TOP_PADDING: f32 = 16.0;
-    const ROW_GAP: f32 = 10.0;
-    let (columns, card_width, art_size, gap, left) = grid_metrics(width);
-    screen.library.view.grid_columns = columns;
-    let row_height = art_size + 81.0;
-    let row_step = row_height + ROW_GAP;
-    let rows = albums.len().div_ceil(columns);
-    let content = ui.max_rect();
-    ui.set_height(TOP_PADDING + rows as f32 * row_step);
-    if let Some(position) = scroll_to {
-        let top = content.top() + TOP_PADDING + (position / columns) as f32 * row_step;
-        ui.scroll_to_rect(
-            egui::Rect::from_min_size(
-                egui::pos2(content.left(), top),
-                egui::vec2(width, row_height),
-            ),
-            Some(egui::Align::Center),
-        );
-    }
-    let first = (((viewport.min.y - TOP_PADDING).max(0.0) / row_step).floor() as usize).min(rows);
-    let last =
-        ((((viewport.max.y - TOP_PADDING).max(0.0) / row_step).ceil() as usize) + 1).min(rows);
-    for row in first..last {
-        let row_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                content.left(),
-                content.top() + TOP_PADDING + row as f32 * row_step,
-            ),
-            egui::vec2(ui.available_width(), row_height),
-        );
-        let mut row_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(row_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Min)),
-        );
-        row_ui.add_space(left);
-        row_ui.spacing_mut().item_spacing.x = gap;
-        let start = row * columns;
-        for &album_index in albums.iter().skip(start).take(columns) {
-            show_album_card(
-                ctx,
-                &mut row_ui,
-                screen,
-                album_index,
-                card_width,
-                art_size,
-                row_height,
-            );
-        }
-    }
-}
+const TOP_PADDING: f32 = 16.0;
+const ROW_GAP: f32 = 10.0;
+/// Height of a card below its artwork: padding, gap, and two lines of text.
+const CARD_TEXT_HEIGHT: f32 = 81.0;
 
-fn show_album_card(
-    ctx: &egui::Context,
-    ui: &mut egui::Ui,
-    screen: &mut AlbumScreen<'_>,
-    index: usize,
+/// Card sizes for a grid filling `width`.
+#[derive(Clone, Copy)]
+struct GridMetrics {
+    columns: usize,
     card_width: f32,
     art_size: f32,
-    card_height: f32,
-) {
-    let colors = theme::colors(ui.ctx());
-    if screen.library.model.albums.get(index).is_none() {
-        return;
-    }
-    let cover = screen.album_texture(ctx, index);
-    let cover_opacity = screen.album_texture_opacity(ctx, index);
-    let album = &screen.library.model.albums[index];
-    let selected = screen.library.view.highlighted_album == Some(index);
-    // Checked before drawing, since the card's fill is painted before its response exists.
-    let hovered = ui.rect_contains_pointer(egui::Rect::from_min_size(
-        ui.cursor().min,
-        egui::vec2(card_width, card_height),
-    ));
-    let response = ui.allocate_ui_with_layout(
-        egui::vec2(card_width, card_height),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            egui::Frame::new()
-                .fill(if selected {
-                    colors.selected
-                } else if hovered {
-                    colors.hover
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
-                .inner_margin(egui::Margin::same(6))
-                .corner_radius(3)
-                .show(ui, |ui| {
-                    let art = ui.allocate_space(egui::vec2(art_size, art_size)).1;
-                    if ui.is_rect_visible(art) {
-                        if let Some(cover) = &cover {
-                            if cover_opacity < 1.0 {
-                                show_shimmer_rect(ui, art, 8.0);
-                            }
-                            paint_cover_with_opacity(ui, cover, art, cover_opacity);
-                        } else {
-                            ui.painter().rect_filled(art, 8.0, colors.surface);
-                            ui.painter().text(
-                                art.center(),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::DISC,
-                                theme::icon_font(32.0),
-                                colors.muted,
-                            );
-                        }
-                        if screen.settings.album_format_badges {
-                            paint_format_badge(
-                                ui,
-                                art,
-                                album_format_label(&screen.library.model, album),
-                            );
-                        }
-                    }
-                    ui.add_space(9.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&album.title)
-                                .color(colors.text)
-                                .size(14.0),
-                        )
-                        .truncate(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{} · {} tracks",
-                                album.artist,
-                                album.tracks.len()
-                            ))
-                            .color(colors.muted)
-                            .size(12.0),
-                        )
-                        .truncate(),
-                    );
-                });
-        },
-    );
-    let response = response.response.interact(egui::Sense::click());
-    describe_album(&response, album, selected);
-    if response.double_clicked() {
-        play_album(screen, index);
-    } else if response.clicked() {
-        open_album(ctx, screen, index);
-    }
-    show_album_context_menu(response, screen, index);
+    gap: f32,
+    left: f32,
 }
 
-pub(super) fn show_skeleton_albums(ctx: &egui::Context, ui: &mut egui::Ui, width: f32) {
-    let (columns, card_width, art_size, gap, left) = grid_metrics(width);
-    let card_height = art_size + 81.0;
-    ui.add_space(16.0);
-    for _ in 0..3 {
-        ui.horizontal(|ui| {
-            ui.add_space(left);
-            ui.spacing_mut().item_spacing.x = gap;
-            for _ in 0..columns {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(card_width, card_height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin::same(6))
-                            .corner_radius(10.0)
-                            .show(ui, |ui| {
-                                let art = ui.allocate_space(egui::vec2(art_size, art_size)).1;
-                                show_shimmer_rect(ui, art, 8.0);
-                            });
-                    },
-                );
-            }
-        });
-        ui.add_space(10.0);
+/// Draw albums as a grid of cards, drawing only the rows in view.
+///
+/// # Arguments
+/// * `app` - Application holding the library.
+/// * `albums` - Albums to show, in order.
+/// * `width` - Width of the grid at 100% zoom.
+/// * `scroll_to` - Position in `albums` to scroll into view.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The grid element.
+pub(super) fn render(
+    app: &mut ViperApp,
+    albums: &Arc<Vec<usize>>,
+    width: f32,
+    scroll_to: Option<usize>,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let metrics = grid_metrics(width);
+    app.library.view.grid_columns = metrics.columns;
+    let rows = albums.len().div_ceil(metrics.columns);
+    let scroll = app.ui.albums_scroll.clone();
+    if let Some(position) = scroll_to {
+        scroll.scroll_to_item(position / metrics.columns, ScrollStrategy::Center);
     }
-    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    let albums = Arc::clone(albums);
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .child(
+            uniform_list(
+                "album-grid-scroll",
+                rows,
+                cx.processor(move |app, range: Range<usize>, _, cx| {
+                    let colors = theme::colors(cx);
+                    let rows = range
+                        .clone()
+                        .map(|row| {
+                            let start = row * metrics.columns;
+                            let end = (start + metrics.columns).min(albums.len());
+                            let cards = albums[start..end]
+                                .iter()
+                                .map(|&index| card(app, index, metrics, colors, cx))
+                                .collect::<Vec<_>>();
+                            div()
+                                .flex()
+                                .h(sz(metrics.art_size + CARD_TEXT_HEIGHT + ROW_GAP))
+                                .pl(sz(metrics.left))
+                                .gap(sz(metrics.gap))
+                                .children(cards)
+                        })
+                        .collect::<Vec<_>>();
+                    let cover = |row: usize| (row * metrics.columns).min(albums.len());
+                    let above =
+                        cover(range.start.saturating_sub(PREFETCH_ROWS))..cover(range.start);
+                    let below = cover(range.end)..cover(range.end + PREFETCH_ROWS);
+                    prefetch_covers(app, &albums[above]);
+                    prefetch_covers(app, &albums[below]);
+                    rows
+                }),
+            )
+            .track_scroll(&scroll)
+            .pt(sz(TOP_PADDING))
+            .size_full(),
+        )
+        .vertical_scrollbar(&scroll)
+        .into_any_element()
 }
 
-fn grid_metrics(width: f32) -> (usize, f32, f32, f32, f32) {
+/// Draw one album card: cover, title, and artist with the track count.
+fn card(
+    app: &mut ViperApp,
+    index: usize,
+    metrics: GridMetrics,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let cover = album_cover(app, index, metrics.art_size, 8.0, colors);
+    let Some(album) = app.library.model.albums.get(index) else {
+        return div().into_any_element();
+    };
+    let selected = app.library.view.highlighted_album == Some(index);
+    let element = div()
+        .id(("album-card", index))
+        .role(gpui::Role::ListItem)
+        .aria_label(album_description(album))
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(sz(metrics.card_width))
+        .h(sz(metrics.art_size + CARD_TEXT_HEIGHT))
+        .p(sz(6.0))
+        .gap(sz(9.0))
+        .rounded(sz(3.0))
+        .cursor_pointer()
+        .when(selected, |card| card.bg(colors.selected))
+        .when(!selected, |card| card.hover(|style| style.bg(colors.hover)))
+        .child(cover)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_size(sz(14.0))
+                        .text_color(colors.text)
+                        .truncate()
+                        .child(album.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(sz(12.0))
+                        .text_color(colors.muted)
+                        .truncate()
+                        .child(format!("{} · {} tracks", album.artist, album.tracks.len())),
+                ),
+        );
+    album_interactions(element, index, cx).into_any_element()
+}
+
+/// Placeholder cards shown while the first scan runs.
+pub(super) fn skeleton(app: &ViperApp, width: f32, colors: Palette) -> AnyElement {
+    let metrics = grid_metrics(width);
+    let rows = (0..3).map(|_| {
+        div()
+            .flex()
+            .pl(sz(metrics.left))
+            .gap(sz(metrics.gap))
+            .children((0..metrics.columns).map(|_| {
+                div()
+                    .flex_none()
+                    .w(sz(metrics.card_width))
+                    .h(sz(metrics.art_size + CARD_TEXT_HEIGHT))
+                    .p(sz(6.0))
+                    .child(shimmer(app, 8.0, colors).size(sz(metrics.art_size)))
+            }))
+    });
+    div()
+        .flex()
+        .flex_col()
+        .pt(sz(TOP_PADDING))
+        .gap(sz(ROW_GAP))
+        .children(rows)
+        .into_any_element()
+}
+
+fn grid_metrics(width: f32) -> GridMetrics {
     const LEFT_PADDING: f32 = 12.0;
     const RIGHT_PADDING: f32 = 18.0;
     const MIN_GAP: f32 = 12.0;
@@ -207,5 +191,11 @@ fn grid_metrics(width: f32) -> (usize, f32, f32, f32, f32) {
     };
     let art_size = (card_width - 12.0).max(36.0);
     let gap = ((area - columns as f32 * card_width) / (columns - 1) as f32).max(MIN_GAP);
-    (columns, card_width, art_size, gap, LEFT_PADDING)
+    GridMetrics {
+        columns,
+        card_width,
+        art_size,
+        gap,
+        left: LEFT_PADDING,
+    }
 }

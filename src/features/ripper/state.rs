@@ -5,8 +5,7 @@ use super::{
     musicbrainz::{self, Release},
     rip::{self, AlbumTags, PlannedTrack, RipEvent, RipPlan},
 };
-use crate::shared::ui::toasts::Toasts;
-use eframe::egui;
+use crate::shared::{artwork::render_image, repaint::Repaint, ui::toasts::Toasts};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -98,7 +97,7 @@ pub(crate) struct TrackDraft {
 }
 
 /// A downloaded cover and its decoded image; `None` when the release has none.
-type CoverResult = Result<Option<(Vec<u8>, egui::ColorImage)>, String>;
+type CoverResult = Result<Option<(Vec<u8>, Arc<gpui::RenderImage>)>, String>;
 
 pub(crate) enum Cover {
     /// No release is chosen, so there is no cover to fetch.
@@ -110,7 +109,7 @@ pub(crate) enum Cover {
     Ready {
         release_id: String,
         bytes: Vec<u8>,
-        texture: egui::TextureHandle,
+        texture: Arc<gpui::RenderImage>,
     },
     /// The Cover Art Archive has no cover for the release, or could not be reached.
     Unavailable { release_id: String },
@@ -158,7 +157,7 @@ impl Default for RipperFeature {
 impl RipperFeature {
     /// Advance background work. Runs every frame on every page, so a rip carries on and reports
     /// while the user is elsewhere.
-    pub(crate) fn poll(&mut self, ctx: &egui::Context, toasts: &mut Toasts) {
+    pub(crate) fn poll(&mut self, ctx: &Repaint, toasts: &mut Toasts) {
         self.phase = match std::mem::replace(&mut self.phase, Phase::Waiting) {
             Phase::Reading(job) => match job.try_recv() {
                 Ok(read) => self.disc_read(ctx, read),
@@ -176,7 +175,7 @@ impl RipperFeature {
     }
 
     /// Check the drives while the page is shown, and react to a disc going in or out.
-    pub(crate) fn watch_drives(&mut self, ctx: &egui::Context) {
+    pub(crate) fn watch_drives(&mut self, ctx: &Repaint) {
         if !matches!(
             self.phase,
             Phase::Waiting | Phase::Ready(_) | Phase::Done(_) | Phase::Failed(_)
@@ -307,7 +306,7 @@ impl RipperFeature {
         };
     }
 
-    fn disc_read(&self, ctx: &egui::Context, read: Result<DiscRead, String>) -> Phase {
+    fn disc_read(&self, ctx: &Repaint, read: Result<DiscRead, String>) -> Phase {
         let (read, drive) = match (read, self.selected.clone()) {
             (Ok(read), Some(drive)) => (read, drive),
             (Err(error), _) => return Phase::Failed(error),
@@ -330,7 +329,7 @@ impl RipperFeature {
     }
 
     /// Start ripping the chosen tracks into `root`.
-    pub(crate) fn start_rip(&mut self, ctx: &egui::Context, root: &Path) {
+    pub(crate) fn start_rip(&mut self, ctx: &Repaint, root: &Path) {
         let Phase::Ready(session) = std::mem::replace(&mut self.phase, Phase::Waiting) else {
             return;
         };
@@ -338,7 +337,7 @@ impl RipperFeature {
     }
 
     /// Rip the tracks that failed again, keeping those that worked.
-    pub(crate) fn retry_failed(&mut self, ctx: &egui::Context) {
+    pub(crate) fn retry_failed(&mut self, ctx: &Repaint) {
         let Phase::Done(rip) = std::mem::replace(&mut self.phase, Phase::Waiting) else {
             return;
         };
@@ -430,7 +429,7 @@ impl RipperFeature {
     }
 }
 
-fn start(session: Box<Session>, root: &Path, eject_when_done: bool, ctx: &egui::Context) -> Phase {
+fn start(session: Box<Session>, root: &Path, eject_when_done: bool, ctx: &Repaint) -> Phase {
     let draft = &session.draft;
     let album = AlbumTags {
         title: draft.album.trim().to_owned(),
@@ -649,7 +648,7 @@ impl Draft {
 }
 
 impl Session {
-    fn poll(&mut self, ctx: &egui::Context) {
+    fn poll(&mut self, ctx: &Repaint) {
         if let Lookup::Searching(job) = &self.lookup {
             match job.try_recv() {
                 Ok(result) => self.lookup_finished(ctx, result),
@@ -661,12 +660,7 @@ impl Session {
         }
         if let Cover::Loading { release_id, job } = &self.cover {
             match job.try_recv() {
-                Ok(Ok(Some((bytes, image)))) => {
-                    let texture = ctx.load_texture(
-                        format!("ripper-cover-{release_id}"),
-                        image,
-                        egui::TextureOptions::LINEAR,
-                    );
+                Ok(Ok(Some((bytes, texture)))) => {
                     self.cover = Cover::Ready {
                         release_id: release_id.clone(),
                         bytes,
@@ -683,7 +677,7 @@ impl Session {
         }
     }
 
-    fn lookup_finished(&mut self, ctx: &egui::Context, result: Result<Vec<Release>, String>) {
+    fn lookup_finished(&mut self, ctx: &Repaint, result: Result<Vec<Release>, String>) {
         self.lookup = match result {
             Ok(releases) if releases.is_empty() => Lookup::NotFound,
             Ok(releases) => Lookup::Matched {
@@ -699,7 +693,7 @@ impl Session {
     }
 
     /// Use another of the releases MusicBrainz found.
-    pub(crate) fn choose_release(&mut self, ctx: &egui::Context, index: usize) {
+    pub(crate) fn choose_release(&mut self, ctx: &Repaint, index: usize) {
         let Lookup::Matched { releases, chosen } = &mut self.lookup else {
             return;
         };
@@ -710,7 +704,7 @@ impl Session {
         self.choose(ctx, &release);
     }
 
-    fn choose(&mut self, ctx: &egui::Context, release: &Release) {
+    fn choose(&mut self, ctx: &Repaint, release: &Release) {
         self.draft.apply(release);
         let current = match &self.cover {
             Cover::Loading { release_id, .. }
@@ -724,7 +718,7 @@ impl Session {
     }
 
     /// Ask MusicBrainz about the disc again, after it could not be reached.
-    pub(crate) fn search_again(&mut self, ctx: &egui::Context) {
+    pub(crate) fn search_again(&mut self, ctx: &Repaint) {
         let drive = self.drive.clone();
         let (sender, receiver) = mpsc::channel();
         let repaint = ctx.clone();
@@ -754,7 +748,7 @@ impl Session {
     }
 }
 
-fn fetch_cover(ctx: &egui::Context, release_id: String) -> Cover {
+fn fetch_cover(ctx: &Repaint, release_id: String) -> Cover {
     let (sender, job) = mpsc::channel();
     let repaint = ctx.clone();
     let id = release_id.clone();
@@ -763,9 +757,7 @@ fn fetch_cover(ctx: &egui::Context, release_id: String) -> Cover {
         .spawn(move || {
             let result = musicbrainz::front_cover(&id).map(|cover| {
                 cover.and_then(|bytes| {
-                    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-                    let size = [image.width() as usize, image.height() as usize];
-                    let image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+                    let image = render_image(image::load_from_memory(&bytes).ok()?);
                     Some((bytes, image))
                 })
             });

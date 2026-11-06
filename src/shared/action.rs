@@ -1,10 +1,6 @@
 /// User requests raised by views and handled by the application after the frame is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppAction {
-    /// Pick a local music folder and rescan the library.
-    ChooseMusicFolder,
-    /// Persist application preferences.
-    SaveSettings,
     /// Save SMB connection details and scan the share.
     ConnectSmbShare,
     /// Persist Last.fm API credentials from the preferences drafts.

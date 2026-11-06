@@ -126,7 +126,11 @@ fn read_or_create_prepared_cover(
 ) -> Option<Vec<u8>> {
     match fs::read(cache_path) {
         Ok(bytes) => {
-            if image::load_from_memory(&bytes).is_ok() {
+            // Reading the header is enough to catch a damaged file; covers are decoded when drawn.
+            if image::ImageReader::new(io::Cursor::new(&bytes))
+                .with_guessed_format()
+                .is_ok_and(|reader| reader.into_dimensions().is_ok())
+            {
                 return Some(bytes);
             }
             eprintln!(

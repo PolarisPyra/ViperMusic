@@ -1,6 +1,6 @@
 use super::client::{self, Lyrics};
 use crate::features::library::Track;
-use eframe::egui;
+use crate::shared::repaint::Repaint;
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
@@ -35,12 +35,12 @@ impl LyricsFeature {
     /// Return cached lyrics or start a background lookup for `track`.
     ///
     /// # Arguments
-    /// * `ctx` - egui context used to schedule redraws after the request completes.
+    /// * `ctx` - Wakes the application once the request completes.
     /// * `track` - Track metadata used to query the lyrics provider.
     ///
     /// # Returns
     /// The cached result, or the current loading state.
-    pub(crate) fn request(&mut self, ctx: &egui::Context, track: &Track) -> LyricsResult<'_> {
+    pub(crate) fn request(&mut self, ctx: &Repaint, track: &Track) -> LyricsResult<'_> {
         let key = track_key(track);
         if let Some((finished_key, receiver)) = &self.pending {
             let finished = match receiver.try_recv() {

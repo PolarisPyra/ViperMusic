@@ -3,5 +3,5 @@ mod screen;
 mod state;
 mod writer;
 
-pub(crate) use screen::show;
+pub(crate) use screen::{render, request_close};
 pub(crate) use state::TagEditor;

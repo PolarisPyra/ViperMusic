@@ -1,9 +1,11 @@
-use eframe::egui;
-use std::io::Cursor;
+use gpui::RenderImage;
+use std::{io::Cursor, sync::Arc};
 
-pub(crate) fn decode_album_art(bytes: &[u8]) -> Option<egui::ColorImage> {
+pub(crate) fn decode_album_art(bytes: &[u8]) -> Option<Arc<RenderImage>> {
     match image::load_from_memory(bytes) {
-        Ok(image) => Some(color_image(image.thumbnail(320, 320))),
+        // Covers are prepared at 320 px, so most need no resizing.
+        Ok(image) if image.width() <= 320 && image.height() <= 320 => Some(render_image(image)),
+        Ok(image) => Some(render_image(image.thumbnail(320, 320))),
         Err(error) => {
             eprintln!("Could not decode album artwork: {error}");
             None
@@ -11,12 +13,19 @@ pub(crate) fn decode_album_art(bytes: &[u8]) -> Option<egui::ColorImage> {
     }
 }
 
-fn color_image(image: image::DynamicImage) -> egui::ColorImage {
-    let image = image.into_rgba8();
-    egui::ColorImage::from_rgba_unmultiplied(
-        [image.width() as usize, image.height() as usize],
-        image.as_raw(),
-    )
+/// Convert a decoded image into the BGRA frame GPUI draws.
+///
+/// # Arguments
+/// * `image` - Decoded image in any color format.
+///
+/// # Returns
+/// An image ready to draw with `gpui::img`.
+pub(crate) fn render_image(image: image::DynamicImage) -> Arc<RenderImage> {
+    let mut image = image.into_rgba8();
+    for pixel in image.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    Arc::new(RenderImage::new([image::Frame::new(image)]))
 }
 
 pub(crate) fn prepare_cover(bytes: &[u8]) -> Option<Vec<u8>> {

@@ -1,379 +1,250 @@
-use super::{Lyrics, LyricsFeature, LyricsResult};
+use super::{Lyrics, LyricsResult};
 use crate::{
-    features::{library::Library, playback::Playback},
-    shared::ui::theme,
+    app::ViperApp,
+    shared::ui::{
+        controls::{describe_button, label, listen, sz, tooltip, unzoomed, DragPreview},
+        icons::{inherited_icon, IconName},
+        theme::{self, Palette},
+    },
+    workbench::WorkbenchUi,
 };
-use eframe::egui;
+use gpui::{div, prelude::*, px, AnyElement, Context, CursorStyle, DragMoveEvent, FontWeight};
+use gpui_component::scroll::ScrollableElement;
 
 const MIN_LYRICS_HEIGHT: f32 = 96.0;
 const DEFAULT_LYRICS_HEIGHT: f32 = 220.0;
 const TOGGLE_ROW_HEIGHT: f32 = 30.0;
 const RESIZE_HANDLE_HEIGHT: f32 = 28.0;
-const MIN_TRACK_LIST_HEIGHT: f32 = 100.0;
-const RESIZE_ACTIVE_ID: &str = "album-tracklist-lyrics-resizing";
+const LINE_HEIGHT: f32 = 20.0;
 
-pub(crate) fn maximum_content_height(available_height: f32) -> f32 {
-    (available_height - MIN_TRACK_LIST_HEIGHT - TOGGLE_ROW_HEIGHT - RESIZE_HANDLE_HEIGHT)
-        .max(MIN_LYRICS_HEIGHT)
-}
+/// Marker dragged by the handle above the lyrics to resize them.
+struct LyricsDrag;
 
-pub(crate) fn is_resizing(ctx: &egui::Context) -> bool {
-    ctx.data(|data| data.get_temp::<bool>(egui::Id::new(RESIZE_ACTIVE_ID)))
-        .unwrap_or(false)
-}
-
-pub(crate) fn reserved_height(
-    ctx: &egui::Context,
-    persisted_open: bool,
-    available_height: f32,
-) -> f32 {
-    let open_id = egui::Id::new("album-tracklist-lyrics-open");
-    let height_id = egui::Id::new("album-tracklist-lyrics-height");
-    let user_resized_id = egui::Id::new("album-tracklist-lyrics-user-resized");
-    let open = ctx
-        .data(|data| data.get_temp::<bool>(open_id))
-        .unwrap_or(persisted_open);
+/// Draw the lyrics toggle and, when open, the resizable lyrics of the playing track.
+///
+/// # Arguments
+/// * `app` - Application holding the lyrics and playback.
+/// * `max_height` - Height the panel may take at 100% zoom, toggle row included.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The panel element.
+pub(crate) fn render(
+    app: &mut ViperApp,
+    max_height: f32,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let colors = theme::colors(cx);
+    if app.ui.lyrics_resizing && !cx.has_active_drag() {
+        app.ui.lyrics_resizing = false;
+    }
+    let open = app.settings.lyrics_panel_open;
+    let toggle = toggle(open, colors, cx);
+    let panel = div().flex().flex_col().flex_none().child(toggle);
     if !open {
-        return 0.0;
+        return panel.into_any_element();
     }
-    let user_resized = ctx
-        .data(|data| data.get_temp::<bool>(user_resized_id))
-        .unwrap_or(false);
-    let preferred_height = if user_resized {
-        ctx.data(|data| data.get_temp::<f32>(height_id))
-            .unwrap_or(DEFAULT_LYRICS_HEIGHT)
-    } else {
-        DEFAULT_LYRICS_HEIGHT
-    };
-    let max_content_height = maximum_content_height(available_height);
-    preferred_height.clamp(MIN_LYRICS_HEIGHT, max_content_height)
-        + TOGGLE_ROW_HEIGHT
-        + RESIZE_HANDLE_HEIGHT
-}
-
-pub(crate) fn show(
-    ctx: &egui::Context,
-    ui: &mut egui::Ui,
-    lyrics: &mut LyricsFeature,
-    library: &Library,
-    playback: &Playback,
-    persisted_open: &mut bool,
-    max_content_height: f32,
-) {
-    let current_track = playback.current;
-    let colors = theme::colors(ctx);
-    let open_id = egui::Id::new("album-tracklist-lyrics-open");
-    let height_id = egui::Id::new("album-tracklist-lyrics-height");
-    let user_resized_id = egui::Id::new("album-tracklist-lyrics-user-resized");
-    let mut open = ctx
-        .data(|data| data.get_temp::<bool>(open_id))
-        .unwrap_or(*persisted_open);
-    let mut height = ctx
-        .data(|data| data.get_temp::<f32>(height_id))
-        .unwrap_or(DEFAULT_LYRICS_HEIGHT);
-    let mut user_resized = ctx
-        .data(|data| data.get_temp::<bool>(user_resized_id))
-        .unwrap_or(false);
-    let progress = ctx.animate_bool_with_time(open_id, open, 0.24);
-    height = height.clamp(MIN_LYRICS_HEIGHT, max_content_height);
-    let available_height = ui.available_height();
-    let content_height = (available_height - TOGGLE_ROW_HEIGHT - RESIZE_HANDLE_HEIGHT).max(0.0);
-    let visible_height = content_height * progress;
-    let visible_handle_height = RESIZE_HANDLE_HEIGHT * progress;
-    let collapsed_spacer_height = (available_height - TOGGLE_ROW_HEIGHT).max(0.0);
-    let spacer_height = collapsed_spacer_height * (1.0 - progress);
-    ui.add_space(spacer_height);
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), TOGGLE_ROW_HEIGHT),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| draw_lyrics_toggle(ui, &mut open),
-    );
-
-    if progress > 0.0 {
-        let (resize_rect, resize_response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), visible_handle_height),
-            egui::Sense::hover(),
-        );
-        let drag_start_height_id = height_id.with("drag-start");
-        let drag_start_pointer_id = height_id.with("drag-start-pointer-y");
-        let (pressed, down, released, pointer_pos) = ctx.input(|input| {
-            (
-                input.pointer.button_pressed(egui::PointerButton::Primary),
-                input.pointer.button_down(egui::PointerButton::Primary),
-                input.pointer.button_released(egui::PointerButton::Primary),
-                input.pointer.interact_pos(),
-            )
-        });
-        let mut resizing = is_resizing(ctx);
-        if pressed && open {
-            if let Some(pointer_pos) =
-                pointer_pos.filter(|position| resize_rect.contains(*position))
-            {
-                ctx.data_mut(|data| {
-                    data.insert_temp(drag_start_height_id, height);
-                    data.insert_temp(drag_start_pointer_id, pointer_pos.y);
-                    data.insert_temp(egui::Id::new(RESIZE_ACTIVE_ID), true);
-                });
-                resizing = true;
-            }
-        }
-        if resizing && (down || released) {
-            if let Some(pointer_pos) = pointer_pos {
-                let drag_start_height = ctx
-                    .data(|data| data.get_temp::<f32>(drag_start_height_id))
-                    .unwrap_or(height);
-                let drag_start_pointer_y = ctx
-                    .data(|data| data.get_temp::<f32>(drag_start_pointer_id))
-                    .unwrap_or(pointer_pos.y);
-                height = (drag_start_height - (pointer_pos.y - drag_start_pointer_y))
-                    .clamp(MIN_LYRICS_HEIGHT, max_content_height);
-                user_resized = true;
-            }
-        }
-        if released {
-            resizing = false;
-            ctx.data_mut(|data| data.insert_temp(egui::Id::new(RESIZE_ACTIVE_ID), false));
-        }
-        let is_resizing = resize_response.hovered() || resizing;
-        if is_resizing {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-        }
-        let handle_color = if resizing {
-            colors.accent
-        } else if resize_response.hovered() {
-            colors.muted
-        } else {
-            colors.border
-        };
-        let separator_center = resize_rect.center() + egui::vec2(0.0, 4.0);
-        let handle_center = resize_rect.center() - egui::vec2(0.0, 4.0);
-        ui.painter().line_segment(
-            [
-                egui::pos2(resize_rect.left(), separator_center.y),
-                egui::pos2(resize_rect.right(), separator_center.y),
-            ],
-            egui::Stroke::new(1.0_f32, colors.border),
-        );
-        if is_resizing {
-            ui.painter().line_segment(
-                [
-                    handle_center - egui::vec2(10.0, 0.0),
-                    handle_center + egui::vec2(10.0, 0.0),
-                ],
-                egui::Stroke::new(if resizing { 2.0_f32 } else { 1.0_f32 }, handle_color),
-            );
-        }
-        let lyrics_result = current_track
-            .and_then(|index| library.tracks.get(index))
-            .map(|track| lyrics.request(ctx, track));
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), visible_height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("LYRICS")
-                        .size(10.0)
-                        .strong()
-                        .color(colors.subtle),
-                );
-                ui.add_space(8.0);
-                draw_lyrics_content(
-                    ui,
-                    lyrics_result,
-                    playback.position(),
-                    playback.is_playing(),
-                    current_track,
-                );
-            },
-        );
-    }
-    ctx.data_mut(|data| {
-        data.insert_temp(open_id, open);
-        data.insert_temp(height_id, height);
-        data.insert_temp(user_resized_id, user_resized);
-    });
-    *persisted_open = open;
-}
-
-fn draw_lyrics_content(
-    ui: &mut egui::Ui,
-    result: Option<LyricsResult<'_>>,
-    position: std::time::Duration,
-    playing: bool,
-    current_track: Option<usize>,
-) {
-    let colors = theme::colors(ui.ctx());
-    match result {
-        Some(LyricsResult::Found(lyrics)) => {
-            draw_lyrics_lines(ui, lyrics, position, playing, current_track);
-        }
-        Some(LyricsResult::Loading) => {
-            ui.label(
-                egui::RichText::new("Fetching lyrics…")
-                    .size(12.0)
-                    .color(colors.muted),
-            );
-        }
-        Some(LyricsResult::Unavailable) => {
-            ui.label(
-                egui::RichText::new("Lyrics aren't available for this track.")
-                    .size(12.0)
-                    .color(colors.muted),
-            );
-        }
-        Some(LyricsResult::Failed(error)) => {
-            ui.label(
-                egui::RichText::new("Couldn't fetch lyrics.")
-                    .size(12.0)
-                    .color(colors.muted),
-            )
-            .on_hover_text(error);
-        }
-        None => {
-            ui.label(
-                egui::RichText::new("Play a track to see its lyrics.")
-                    .size(12.0)
-                    .color(colors.muted),
-            );
-        }
-    }
-}
-
-fn draw_lyrics_lines(
-    ui: &mut egui::Ui,
-    lyrics: &Lyrics,
-    position: std::time::Duration,
-    playing: bool,
-    current_track: Option<usize>,
-) {
-    let colors = theme::colors(ui.ctx());
-    const ROW_HEIGHT: f32 = 20.0;
-    let follow_line_id = egui::Id::new("album-tracklist-lyrics-follow-line");
-    let started_lines = lyrics
-        .lines
-        .partition_point(|line| line.timestamp.is_some_and(|time| time <= position));
-    let active_line = lyrics.synced.then(|| started_lines.saturating_sub(1));
-    // The player bar repaints only as often as its seek bar moves, so wake for the next line.
-    if playing && lyrics.synced {
-        if let Some(next) = lyrics
-            .lines
-            .get(started_lines)
-            .and_then(|line| line.timestamp)
-        {
-            ui.ctx()
-                .request_repaint_after(next.saturating_sub(position));
-        }
-    }
-    let scroll_height = ui.available_height();
-    let last_followed = ui
-        .ctx()
-        .data(|data| data.get_temp::<(Option<usize>, Option<usize>)>(follow_line_id));
-    let lyrics_rect = ui.available_rect_before_wrap();
-    let pointer_over_lyrics = ui.ctx().input(|input| {
-        input
-            .pointer
-            .hover_pos()
-            .is_some_and(|position| lyrics_rect.contains(position))
-    });
-    let should_follow = active_line.is_some()
-        && last_followed != Some((current_track, active_line))
-        && !pointer_over_lyrics
-        && !is_resizing(ui.ctx());
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(follow_line_id, (current_track, active_line)));
-    egui::ScrollArea::vertical()
-        .id_salt("album-tracklist-lyrics-scroll")
-        .auto_shrink([false, false])
-        .max_height(scroll_height)
-        .show_rows(ui, ROW_HEIGHT, lyrics.lines.len(), |ui, visible_rows| {
-            if should_follow {
-                if let Some(active_line) = active_line {
-                    let row_step = ROW_HEIGHT + ui.spacing().item_spacing.y;
-                    let content_top = ui.max_rect().top() - visible_rows.start as f32 * row_step;
-                    let active_top = content_top + active_line as f32 * row_step;
-                    let active_rect = egui::Rect::from_min_size(
-                        egui::pos2(ui.max_rect().left(), active_top),
-                        egui::vec2(ui.available_width(), ROW_HEIGHT),
-                    );
-                    let viewport = ui.clip_rect();
-                    if active_rect.top() < viewport.top()
-                        || active_rect.bottom() > viewport.bottom()
-                    {
-                        ui.scroll_to_rect_animation(
-                            active_rect,
-                            None,
-                            egui::style::ScrollAnimation::new(
-                                420.0,
-                                egui::emath::Rangef::new(0.24, 0.48),
-                            ),
-                        );
-                    }
-                }
-            }
-            for index in visible_rows {
-                let Some(line) = lyrics.lines.get(index) else {
-                    continue;
-                };
-                let active = active_line == Some(index);
-                let text = egui::RichText::new(&line.text)
-                    .size(12.0)
-                    .color(if active { colors.accent } else { colors.muted })
-                    .strong();
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), ROW_HEIGHT),
-                    egui::Sense::hover(),
-                );
-                if active {
-                    ui.painter().rect_filled(rect, 3.0, colors.selected);
-                }
-                ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(rect.shrink2(egui::vec2(4.0, 0.0)))
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                )
-                .add(egui::Label::new(text).truncate());
-            }
-        });
-}
-
-fn draw_lyrics_toggle(ui: &mut egui::Ui, open: &mut bool) {
-    let colors = theme::colors(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, *open, "View lyrics")
-    });
-    draw_action_hover(ui, rect, response.hovered());
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        if *open {
-            egui_phosphor::regular::CARET_DOWN
-        } else {
-            egui_phosphor::regular::CARET_UP
-        },
-        theme::icon_font(20.0),
-        if response.hovered() {
-            colors.text
-        } else {
-            colors.muted
-        },
-    );
-    let text_response = ui.add(
-        egui::Label::new(
-            egui::RichText::new("View Lyrics")
-                .size(11.0)
-                .color(colors.muted),
+    let max_content =
+        (max_height - TOGGLE_ROW_HEIGHT - RESIZE_HANDLE_HEIGHT).max(MIN_LYRICS_HEIGHT);
+    let height = app
+        .ui
+        .lyrics_height
+        .unwrap_or(DEFAULT_LYRICS_HEIGHT)
+        .clamp(MIN_LYRICS_HEIGHT, max_content);
+    let resizing = app.ui.lyrics_resizing;
+    let handle = div()
+        .id("lyrics-resize-handle")
+        .group("lyrics-resize-handle")
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(sz(7.0))
+        .h(sz(RESIZE_HANDLE_HEIGHT))
+        .cursor(CursorStyle::ResizeUpDown)
+        .on_drag(LyricsDrag, |_, _, _, cx| cx.new(|_| DragPreview(None)))
+        .child(
+            div()
+                .w(sz(20.0))
+                .h(if resizing { px(2.0) } else { px(1.0) })
+                .when(resizing, |line| line.bg(colors.accent))
+                .when(!resizing, |line| {
+                    line.group_hover("lyrics-resize-handle", |style| style.bg(colors.muted))
+                }),
         )
-        .sense(egui::Sense::click()),
-    );
-    if response.on_hover_text("View Lyrics").clicked() || text_response.clicked() {
-        *open = !*open;
-    }
+        .child(div().w_full().h(px(1.0)).bg(colors.border));
+    let content = content(app, colors, cx);
+    panel
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .on_drag_move(listen(
+                    cx,
+                    move |app, event: &DragMoveEvent<LyricsDrag>, window, _| {
+                        // The panel's bottom stays put, so the pointer sets the height above it.
+                        let height =
+                            unzoomed(event.bounds.bottom() - event.event.position.y, window)
+                                - RESIZE_HANDLE_HEIGHT * 0.5;
+                        app.ui.lyrics_height = Some(height.clamp(MIN_LYRICS_HEIGHT, max_content));
+                        app.ui.lyrics_resizing = true;
+                    },
+                ))
+                .child(handle)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .h(sz(height))
+                        .child(label("LYRICS", 10.0, colors.subtle).font_weight(FontWeight::BOLD))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_h_0()
+                                .mt(sz(8.0))
+                                .child(content),
+                        ),
+                ),
+        )
+        .into_any_element()
 }
 
-fn draw_action_hover(ui: &egui::Ui, rect: egui::Rect, hovered: bool) {
-    let colors = theme::colors(ui.ctx());
-    if hovered {
-        ui.painter().rect_filled(rect, 7.0, colors.hover);
+/// The "View Lyrics" row that opens and closes the panel.
+fn toggle(open: bool, colors: Palette, cx: &mut Context<ViperApp>) -> AnyElement {
+    let toggle = cx.listener(|app, _, _, cx| {
+        app.settings.lyrics_panel_open = !app.settings.lyrics_panel_open;
+        app.save_settings();
+        cx.notify();
+    });
+    describe_button(div().id("lyrics-toggle"), "View Lyrics")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_end()
+        .gap(sz(4.0))
+        .h(sz(TOGGLE_ROW_HEIGHT))
+        .cursor_pointer()
+        .group("lyrics-toggle")
+        .tooltip(tooltip("View Lyrics"))
+        .child(label("View Lyrics", 11.0, colors.muted))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(sz(30.0))
+                .rounded(sz(7.0))
+                .text_color(colors.muted)
+                .group_hover("lyrics-toggle", |style| {
+                    style.bg(colors.hover).text_color(colors.text)
+                })
+                .child(inherited_icon(
+                    if open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronUp
+                    },
+                    20.0,
+                )),
+        )
+        .on_click(toggle)
+        .into_any_element()
+}
+
+/// The playing track's lyrics, or a message explaining why there are none.
+fn content(app: &mut ViperApp, colors: Palette, cx: &mut Context<ViperApp>) -> AnyElement {
+    let (current, position, playing) = {
+        let playback = app.playback();
+        (playback.current, playback.position(), playback.is_playing())
+    };
+    let result = current
+        .and_then(|index| app.library.model.tracks.get(index))
+        .map(|track| app.lyrics.request(&app.repaint, track));
+    let message = match result {
+        Some(LyricsResult::Found(lyrics)) => {
+            let started = lyrics
+                .lines
+                .partition_point(|line| line.timestamp.is_some_and(|time| time <= position));
+            // The player bar redraws only as often as its seek bar moves, so wake for the next line.
+            if playing && lyrics.synced {
+                if let Some(next) = lyrics.lines.get(started).and_then(|line| line.timestamp) {
+                    app.repaint
+                        .request_repaint_after(next.saturating_sub(position));
+                }
+            }
+            let active = lyrics.synced.then(|| started.saturating_sub(1));
+            return lines(&mut app.ui, lyrics, (current, active), colors, cx);
+        }
+        Some(LyricsResult::Loading) => "Fetching lyrics…",
+        Some(LyricsResult::Unavailable) => "Lyrics aren't available for this track.",
+        Some(LyricsResult::Failed(error)) => {
+            return div()
+                .id("lyrics-failed")
+                .tooltip(tooltip(error.to_owned()))
+                .child(label("Couldn't fetch lyrics.", 12.0, colors.muted))
+                .into_any_element();
+        }
+        None => "Play a track to see its lyrics.",
+    };
+    label(message, 12.0, colors.muted).into_any_element()
+}
+
+/// The lyric lines, highlighting and following the sung line of synced lyrics.
+///
+/// `follow` is the playing track and its sung line, to scroll only when either changes.
+fn lines(
+    ui: &mut WorkbenchUi,
+    lyrics: &Lyrics,
+    follow: (Option<usize>, Option<usize>),
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let active = follow.1;
+    let scroll = ui.lyrics_scroll.clone();
+    if let Some(line) = active {
+        if ui.lyrics_followed != Some(follow) && !ui.lyrics_hovered && !ui.lyrics_resizing {
+            scroll.scroll_to_item(line);
+        }
     }
+    ui.lyrics_followed = Some(follow);
+    let rows = lyrics.lines.iter().enumerate().map(|(index, line)| {
+        let active = active == Some(index);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(sz(LINE_HEIGHT))
+            .px(sz(4.0))
+            .rounded(sz(3.0))
+            .when(active, |row| row.bg(colors.selected))
+            .child(
+                label(
+                    line.text.clone(),
+                    12.0,
+                    if active { colors.accent } else { colors.muted },
+                )
+                .font_weight(FontWeight::SEMIBOLD)
+                .truncate(),
+            )
+    });
+    div()
+        .relative()
+        .size_full()
+        .child(
+            div()
+                .id("lyrics-lines")
+                .flex()
+                .flex_col()
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .on_hover(listen(cx, |app, hovered: &bool, _, _| {
+                    app.ui.lyrics_hovered = *hovered;
+                }))
+                .children(rows),
+        )
+        .vertical_scrollbar(&scroll)
+        .into_any_element()
 }

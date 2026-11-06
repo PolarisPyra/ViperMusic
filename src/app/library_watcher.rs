@@ -1,13 +1,12 @@
 use super::application::ViperApp;
 use crate::features::library::background::WatcherEvent;
-use eframe::egui;
 
 impl ViperApp {
-    pub(super) fn poll_file_watcher(&mut self, ctx: &egui::Context) {
+    pub(super) fn poll_file_watcher(&mut self) {
         let events = self.library.background.poll_file_watcher(
             self.settings.music_path.as_deref(),
             self.library.scanning,
-            ctx,
+            &self.repaint,
         );
         for event in events {
             match event {

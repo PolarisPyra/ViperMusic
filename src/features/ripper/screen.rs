@@ -1,29 +1,32 @@
 //! The Rip CD page: the drive and its disc, the disc's tags to check before ripping, and the rip's
 //! progress and result.
-//!
-//! Drawing only reads the ripper and edits the draft tags; everything else the user asks for is
-//! collected as a [`Command`] and applied after the frame is drawn, so no state changes under the
-//! code drawing it.
 use super::{
     drive::{Drive, DriveStatus},
     rip,
     state::{Cover, Lookup, Phase, Rip, RipperFeature, Session, TrackProgress},
 };
 use crate::{
-    features::library::{is_smb_path, state::LibraryFeature},
+    app::ViperApp,
+    features::library::is_smb_path,
     platform::{desktop, persistence::settings::Settings},
     shared::ui::{
         controls::{
-            action_button, connection_text_edit, describe_button, field_label, notice,
-            primary_button,
+            action_button, click, describe_button, field_label, icon_button, label, listen,
+            menu_item, notice, primary_button, sz, text_field, tooltip,
         },
-        theme::{self, icon_font, Palette},
-        toasts::Toasts,
+        icons::{icon, IconName},
+        text_input::FieldOptions,
+        theme::{self, Palette},
     },
-    workbench::WorkbenchState,
 };
-use eframe::egui;
-use egui_phosphor::regular as icons;
+use gpui::{
+    div, img, prelude::*, px, relative, AnyElement, ClickEvent, Context, Div, ElementId,
+    FontWeight, SharedString, Stateful, Window,
+};
+use gpui_component::{
+    button::Button, checkbox::Checkbox, input::Input, menu::DropdownMenu, spinner::Spinner,
+    Disableable, Sizable,
+};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -33,167 +36,104 @@ use std::{
 const COVER_SIZE: f32 = 168.0;
 /// Height of a row in the track list.
 const ROW_HEIGHT: f32 = 34.0;
+/// Widest the release list and the album's tag fields grow.
+const FIELDS_WIDTH: f32 = 520.0;
+/// Width of the labels before the album's tag fields.
+const LABEL_WIDTH: f32 = 88.0;
 
-pub(crate) struct RipperScreen<'a> {
-    pub(crate) ripper: &'a mut RipperFeature,
-    pub(crate) workbench: &'a mut WorkbenchState,
-    pub(crate) library: &'a mut LibraryFeature,
-    pub(crate) settings: &'a Settings,
-    pub(crate) toasts: &'a mut Toasts,
-}
-
-/// What the user asked for while the page was drawn.
-enum Command {
-    SelectDrive(Drive),
-    ToggleTray,
-    ReadAgain,
-    SearchAgain,
-    ChooseRelease(usize),
-    ChooseDestination,
-    Rip(PathBuf),
-    Cancel,
-    RetryFailed,
-    EditAgain,
-    NextDisc,
-    OpenFolder(PathBuf),
-    ShowAlbum(usize),
-}
-
-pub(crate) fn show(ui: &mut egui::Ui, screen: RipperScreen<'_>) {
-    let ctx = &ui.ctx().clone();
-    let colors = theme::colors(ctx);
-    screen.ripper.watch_drives(ctx);
-    let destination = destination(screen.ripper, screen.settings);
-    let waiting_for = screen.waiting_for();
-    let mut command = None;
-    let paranoia_missing = screen.ripper.needs_paranoia();
-    let ripper = &mut *screen.ripper;
-    if let Phase::Ready(session) = &ripper.phase {
-        // The rip button stays in view however long the track list is.
-        egui::Panel::bottom("ripper-actions")
-            .frame(
-                egui::Frame::new()
-                    .fill(colors.panel)
-                    .inner_margin(egui::Margin::symmetric(24, 12)),
-            )
-            .show(ui, |ui| {
-                rip_footer(
-                    ui,
-                    colors,
-                    session,
-                    ReadyFooter {
-                        destination: destination.as_deref(),
-                        library_root: screen.settings.music_path.as_deref(),
-                        eject_when_done: &mut ripper.eject_when_done,
-                        paranoia_missing,
-                    },
-                    &mut command,
-                );
+/// Draw the Rip CD page, watching the drives while it is shown.
+///
+/// # Arguments
+/// * `app` - Application holding the ripper.
+/// * `window` - Window being drawn.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The page element.
+pub(crate) fn render(
+    app: &mut ViperApp,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let colors = theme::colors(cx);
+    app.ripper.watch_drives(&app.repaint);
+    let destination = destination(&app.ripper, &app.settings);
+    let header = header(&app.ripper, colors, cx);
+    let body = match &app.ripper.phase {
+        Phase::Waiting => waiting(waiting_for(&app.ripper), colors, cx),
+        Phase::Reading(_) => busy_card(
+            colors,
+            "Reading the disc",
+            "Reading its tracks and looking it up on MusicBrainz.",
+        ),
+        Phase::Failed(message) => card(colors)
+            .child(card_title(
+                colors,
+                IconName::TriangleAlert,
+                "Couldn't read this disc",
+            ))
+            .child(card_text(colors, message.clone()))
+            .child(
+                div()
+                    .flex()
+                    .gap(sz(8.0))
+                    .mt(sz(14.0))
+                    .child(primary_button(
+                        "ripper-read-again",
+                        "Try again",
+                        true,
+                        colors,
+                        click(cx, |app, _, _| app.ripper.read_disc()),
+                    ))
+                    .child(action_button(
+                        "ripper-eject-failed",
+                        "Eject",
+                        true,
+                        colors,
+                        toggle_tray(cx),
+                    )),
+            ),
+        Phase::Ready(_) => ready(app, window, colors, cx),
+        Phase::Ripping(rip) => ripping(rip, false, colors, cx),
+        Phase::Cancelling(rip) => ripping(rip, true, colors, cx),
+        Phase::Done(rip) => {
+            let draft = &rip.session.draft;
+            let album = app.library.model.albums.iter().position(|album| {
+                album.title == draft.album.trim() && album.artist == draft.artist.trim()
             });
-    }
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(colors.canvas)
-                .inner_margin(egui::Margin::symmetric(24, 0)),
+            done(rip, album, colors, cx)
+        }
+    };
+    // The rip button stays in view however long the track list is.
+    let footer = match &app.ripper.phase {
+        Phase::Ready(session) => Some(rip_footer(
+            &app.ripper,
+            session,
+            destination,
+            app.settings.music_path.as_deref(),
+            colors,
+            cx,
+        )),
+        _ => None,
+    };
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(colors.canvas)
+        .child(
+            div()
+                .id("ripper-content")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(sz(24.0))
+                .py(sz(24.0))
+                .child(header)
+                .child(div().mt(sz(20.0)).child(body)),
         )
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("ripper-content")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_space(24.0);
-                    header(ui, colors, screen.ripper, &mut command);
-                    ui.add_space(20.0);
-                    match &mut screen.ripper.phase {
-                        Phase::Waiting => waiting(ui, colors, waiting_for, &mut command),
-                        Phase::Reading(_) => busy_card(
-                            ui,
-                            colors,
-                            "Reading the disc",
-                            "Reading its tracks and looking it up on MusicBrainz.",
-                        ),
-                        Phase::Failed(message) => {
-                            card(ui, colors, |ui| {
-                                card_title(ui, colors, icons::WARNING, "Couldn't read this disc");
-                                card_text(ui, colors, message);
-                                ui.add_space(14.0);
-                                ui.horizontal(|ui| {
-                                    if primary_button(ui, colors, "Try again", true).clicked() {
-                                        command = Some(Command::ReadAgain);
-                                    }
-                                    if action_button(ui, "Eject", true).clicked() {
-                                        command = Some(Command::ToggleTray);
-                                    }
-                                });
-                            });
-                        }
-                        Phase::Ready(session) => ready(ui, colors, session, &mut command),
-                        Phase::Ripping(rip) => ripping(ui, colors, rip, false, &mut command),
-                        Phase::Cancelling(rip) => ripping(ui, colors, rip, true, &mut command),
-                        Phase::Done(rip) => {
-                            done(ui, colors, rip, screen.library, &mut command);
-                        }
-                    }
-                    ui.add_space(24.0);
-                });
-        });
-    if let Some(command) = command {
-        apply(command, ctx, screen);
-    }
-}
-
-impl RipperScreen<'_> {
-    fn waiting_for(&self) -> WaitingFor {
-        match (&self.ripper.drives, self.ripper.status()) {
-            (None, _) => WaitingFor::FirstProbe,
-            (Some(drives), _) if drives.is_empty() => WaitingFor::NoDrive,
-            (Some(_), status) => WaitingFor::Disc(status.cloned()),
-        }
-    }
-}
-
-fn apply(command: Command, ctx: &egui::Context, screen: RipperScreen<'_>) {
-    let ripper = screen.ripper;
-    match command {
-        Command::SelectDrive(drive) => ripper.select_drive(drive),
-        Command::ToggleTray => ripper.toggle_tray(screen.toasts),
-        Command::ReadAgain => ripper.read_disc(),
-        Command::SearchAgain => {
-            if let Phase::Ready(session) = &mut ripper.phase {
-                session.search_again(ctx);
-            }
-        }
-        Command::ChooseRelease(index) => {
-            if let Phase::Ready(session) = &mut ripper.phase {
-                session.choose_release(ctx, index);
-            }
-        }
-        Command::ChooseDestination => {
-            let mut dialog = rfd::FileDialog::new().set_title("Choose where ripped albums go");
-            if let Some(current) = destination(ripper, screen.settings) {
-                dialog = dialog.set_directory(current);
-            }
-            if let Some(folder) = dialog.pick_folder() {
-                ripper.destination = Some(folder);
-            }
-        }
-        Command::Rip(root) => ripper.start_rip(ctx, &root),
-        Command::Cancel => ripper.cancel(),
-        Command::RetryFailed => ripper.retry_failed(ctx),
-        Command::EditAgain => ripper.edit_again(),
-        Command::NextDisc => ripper.next_disc(screen.toasts),
-        Command::OpenFolder(folder) => {
-            if let Err(error) = desktop::open_folder(&folder) {
-                screen
-                    .toasts
-                    .push(format!("Could not open the folder: {error}"));
-            }
-        }
-        Command::ShowAlbum(index) => {
-            screen.workbench.open_album(&mut screen.library.view, index);
-        }
-    }
+        .children(footer)
+        .into_any_element()
 }
 
 /// Where albums are ripped to: the folder the user chose, else the library's folder when it is
@@ -211,69 +151,98 @@ fn destination(ripper: &RipperFeature, settings: &Settings) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Music")))
 }
 
-fn header(
-    ui: &mut egui::Ui,
-    colors: Palette,
-    ripper: &RipperFeature,
-    command: &mut Option<Command>,
-) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new("Rip a CD")
-                    .size(30.0)
-                    .strong()
-                    .color(colors.text),
-            );
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(
-                    "Copy an audio CD into your library as FLAC, tagged from MusicBrainz.",
-                )
-                .size(14.0)
-                .color(colors.muted),
-            );
-        });
-        let Some(drives) = ripper.drives.as_deref().filter(|drives| !drives.is_empty()) else {
-            return;
-        };
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let tray_open = ripper.status() == Some(&DriveStatus::TrayOpen);
-            let (icon, label) = if tray_open {
-                (icons::ARROW_LINE_DOWN, "Close tray")
-            } else {
-                (icons::EJECT, "Eject")
-            };
-            let enabled = !ripper.busy();
-            if icon_button(ui, colors, icon, label, enabled).clicked() {
-                *command = Some(Command::ToggleTray);
-            }
-            let selected = ripper.selected.as_ref();
-            let selected_name = selected.map_or("No drive", Drive::name);
-            ui.add_enabled_ui(enabled && drives.len() > 1, |ui| {
-                egui::ComboBox::from_id_salt("ripper-drive")
-                    .selected_text(selected_name)
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        for (drive, _) in drives {
-                            if ui
-                                .selectable_label(Some(drive) == selected, drive.name())
-                                .clicked()
-                            {
-                                *command = Some(Command::SelectDrive(drive.clone()));
-                            }
-                        }
+/// Ask for the folder albums are ripped into.
+fn choose_destination(cx: &mut Context<ViperApp>) {
+    ViperApp::pick_folder(cx, |app, folder| app.ripper.destination = Some(folder));
+}
+
+/// A click handler that opens or closes the drive's tray.
+fn toggle_tray(cx: &Context<ViperApp>) -> impl Fn(&ClickEvent, &mut Window, &mut gpui::App) {
+    click(cx, |app, _, _| app.ripper.toggle_tray(&mut app.toasts))
+}
+
+fn header(ripper: &RipperFeature, colors: Palette, cx: &Context<ViperApp>) -> Div {
+    let titles = div()
+        .flex_1()
+        .min_w_0()
+        .child(label("Rip a CD", 30.0, colors.text).font_weight(FontWeight::BOLD))
+        .child(
+            label(
+                "Copy an audio CD into your library as FLAC, tagged from MusicBrainz.",
+                14.0,
+                colors.muted,
+            )
+            .mt(sz(6.0)),
+        );
+    let row = div().flex().items_center().gap(sz(12.0)).child(titles);
+    let Some(drives) = ripper.drives.as_deref().filter(|drives| !drives.is_empty()) else {
+        return row;
+    };
+    let enabled = !ripper.busy();
+    let selectable = enabled && drives.len() > 1;
+    let selected = ripper.selected.clone();
+    let names = drives
+        .iter()
+        .map(|(drive, _)| drive.clone())
+        .collect::<Vec<Drive>>();
+    let weak = cx.weak_entity();
+    let drive_menu = Button::new("ripper-drive")
+        .label(selected.as_ref().map_or("No drive", Drive::name).to_owned())
+        .outline()
+        .small()
+        .w(sz(220.0))
+        .disabled(!selectable)
+        .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.min_w(px(220.0));
+            for drive in &names {
+                let chosen = drive.clone();
+                menu = menu.item(
+                    menu_item(drive.name().to_owned(), &weak, move |app, _, _| {
+                        app.ripper.select_drive(chosen.clone());
                     })
-                    .response
-                    .on_hover_text("The drive to rip from")
-                    .on_disabled_hover_text(if enabled {
-                        "This is the only drive"
-                    } else {
-                        "Wait for the rip to finish to change drives"
-                    });
-            });
+                    .checked(Some(drive) == selected.as_ref()),
+                );
+            }
+            menu
         });
-    });
+    let hint = if selectable {
+        "The drive to rip from"
+    } else if enabled {
+        "This is the only drive"
+    } else {
+        "Wait for the rip to finish to change drives"
+    };
+    let (tray_icon, tray_label) = if ripper.status() == Some(&DriveStatus::TrayOpen) {
+        (IconName::ArrowDownToLine, "Close tray")
+    } else {
+        (IconName::Eject, "Eject")
+    };
+    let tray = if enabled {
+        icon_button(
+            "ripper-tray",
+            tray_icon,
+            tray_label,
+            colors,
+            toggle_tray(cx),
+        )
+        .into_any_element()
+    } else {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(sz(32.0))
+            .child(icon(tray_icon, 16.0, colors.subtle))
+            .into_any_element()
+    };
+    row.child(
+        div()
+            .id("ripper-drive-hint")
+            .tooltip(tooltip(hint))
+            .child(drive_menu),
+    )
+    .child(tray)
 }
 
 /// What the page waits for before there is a disc to read.
@@ -283,397 +252,581 @@ enum WaitingFor {
     Disc(Option<DriveStatus>),
 }
 
-fn waiting(ui: &mut egui::Ui, colors: Palette, state: WaitingFor, command: &mut Option<Command>) {
+fn waiting_for(ripper: &RipperFeature) -> WaitingFor {
+    match (&ripper.drives, ripper.status()) {
+        (None, _) => WaitingFor::FirstProbe,
+        (Some(drives), _) if drives.is_empty() => WaitingFor::NoDrive,
+        (Some(_), status) => WaitingFor::Disc(status.cloned()),
+    }
+}
+
+fn waiting(state: WaitingFor, colors: Palette, cx: &Context<ViperApp>) -> Div {
     match state {
         WaitingFor::FirstProbe | WaitingFor::Disc(None | Some(DriveStatus::DiscPresent)) => {
-            busy_card(ui, colors, "Looking for a disc", "Checking your CD drives.");
+            busy_card(colors, "Looking for a disc", "Checking your CD drives.")
         }
         WaitingFor::Disc(Some(DriveStatus::NotReady)) => busy_card(
-            ui,
             colors,
             "The drive is spinning up",
             "The disc will be read as soon as the drive is ready.",
         ),
-        WaitingFor::NoDrive => card(ui, colors, |ui| {
-            card_title(ui, colors, icons::DISC, "No CD drive found");
-            card_text(
-                ui,
+        WaitingFor::NoDrive => card(colors)
+            .child(card_title(colors, IconName::Disc, "No CD drive found"))
+            .child(card_text(
                 colors,
                 "Connect a CD or DVD drive. Viper Music finds it on its own.",
-            );
-        }),
-        WaitingFor::Disc(Some(DriveStatus::NoDisc)) => card(ui, colors, |ui| {
-            card_title(ui, colors, icons::DISC, "Insert an audio CD");
-            card_text(
-                ui,
+            )),
+        WaitingFor::Disc(Some(DriveStatus::NoDisc)) => card(colors)
+            .child(card_title(colors, IconName::Disc, "Insert an audio CD"))
+            .child(card_text(
                 colors,
                 "Viper Music reads it as soon as it is in and looks it up on MusicBrainz.",
-            );
-        }),
-        WaitingFor::Disc(Some(DriveStatus::TrayOpen)) => card(ui, colors, |ui| {
-            card_title(ui, colors, icons::DISC, "The tray is open");
-            card_text(ui, colors, "Put an audio CD in and close the tray.");
-            ui.add_space(14.0);
-            if primary_button(ui, colors, "Close tray", true).clicked() {
-                *command = Some(Command::ToggleTray);
-            }
-        }),
-        WaitingFor::Disc(Some(DriveStatus::Inaccessible(reason))) => card(ui, colors, |ui| {
-            card_title(ui, colors, icons::WARNING, "Can't use this drive");
-            card_text(ui, colors, &reason);
-            if cfg!(target_os = "linux") {
-                card_text(
-                    ui,
+            )),
+        WaitingFor::Disc(Some(DriveStatus::TrayOpen)) => card(colors)
+            .child(card_title(colors, IconName::Disc, "The tray is open"))
+            .child(card_text(colors, "Put an audio CD in and close the tray."))
+            .child(div().flex().mt(sz(14.0)).child(primary_button(
+                "ripper-close-tray",
+                "Close tray",
+                true,
+                colors,
+                toggle_tray(cx),
+            ))),
+        WaitingFor::Disc(Some(DriveStatus::Inaccessible(reason))) => card(colors)
+            .child(card_title(
+                colors,
+                IconName::TriangleAlert,
+                "Can't use this drive",
+            ))
+            .child(card_text(colors, reason))
+            .when(cfg!(target_os = "linux"), |card| {
+                card.child(card_text(
                     colors,
                     "On most systems your user needs to be in the optical or cdrom group.",
-                );
-            }
-        }),
+                ))
+            }),
     }
 }
 
-struct ReadyFooter<'a> {
-    destination: Option<&'a Path>,
-    library_root: Option<&'a Path>,
-    eject_when_done: &'a mut bool,
-    paranoia_missing: bool,
+fn ready(
+    app: &mut ViperApp,
+    window: &mut Window,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> Div {
+    let Phase::Ready(session) = &app.ripper.phase else {
+        return div();
+    };
+    let cover = cover(&session.cover, colors);
+    let lookup = lookup_notice(session, colors, cx);
+    let fields = album_fields(app, window, colors, cx);
+    let tracks = track_list(app, window, colors, cx);
+    div()
+        .child(
+            div().flex().items_start().gap(sz(20.0)).child(cover).child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(sz(10.0))
+                    .child(lookup)
+                    .child(fields),
+            ),
+        )
+        .child(div().mt(sz(20.0)).child(tracks))
 }
 
-fn ready(ui: &mut egui::Ui, colors: Palette, session: &mut Session, command: &mut Option<Command>) {
-    ui.horizontal_top(|ui| {
-        cover(ui, colors, &session.cover);
-        ui.add_space(20.0);
-        ui.vertical(|ui| {
-            lookup_notice(ui, colors, session, command);
-            ui.add_space(10.0);
-            album_fields(ui, colors, session);
-        });
-    });
-    ui.add_space(20.0);
-    track_list(ui, colors, session);
+/// Edit the draft of the disc being read, if one is open.
+fn edit_session(app: &mut ViperApp, edit: impl FnOnce(&mut Session)) {
+    if let Phase::Ready(session) = &mut app.ripper.phase {
+        edit(session);
+    }
 }
 
-fn cover(ui: &mut egui::Ui, colors: Palette, cover: &Cover) {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(COVER_SIZE, COVER_SIZE), egui::Sense::hover());
-    let painter = ui.painter();
+/// A text field for one of the draft tags, kept showing the draft when it changes elsewhere,
+/// such as when another release is chosen.
+fn draft_field(
+    app: &mut ViperApp,
+    key: String,
+    value: &str,
+    placeholder: &'static str,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+    edit: impl Fn(&mut Session, &str) + 'static,
+) -> Input {
+    let input = text_field(
+        app,
+        key.clone(),
+        value,
+        FieldOptions {
+            placeholder,
+            masked: false,
+        },
+        window,
+        cx,
+        move |app, text| edit_session(app, |session| edit(session, text)),
+    );
+    app.inputs.sync(&key, value, window, cx);
+    input
+}
+
+fn cover(cover: &Cover, colors: Palette) -> AnyElement {
+    let frame = div()
+        .id("ripper-cover")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(sz(COVER_SIZE))
+        .rounded(sz(10.0))
+        .bg(colors.surface);
     match cover {
-        Cover::Ready { texture, .. } => {
-            egui::Image::new((texture.id(), rect.size()))
-                .corner_radius(10.0)
-                .paint_at(ui, rect);
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Album cover")
-            });
-        }
-        Cover::Loading { .. } => {
-            painter.rect_filled(rect, 10.0, colors.surface);
-            egui::Spinner::new()
-                .size(22.0)
-                .color(colors.muted)
-                .paint_at(
-                    ui,
-                    egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)),
-                );
-        }
-        Cover::None | Cover::Unavailable { .. } => {
-            painter.rect_filled(rect, 10.0, colors.surface);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                icons::VINYL_RECORD,
-                icon_font(56.0),
-                colors.subtle,
-            );
-            response.on_hover_text(if matches!(cover, Cover::None) {
+        Cover::Ready { texture, .. } => img(texture.clone())
+            .flex_none()
+            .size(sz(COVER_SIZE))
+            .rounded(sz(10.0))
+            .into_any_element(),
+        Cover::Loading { .. } => frame
+            .child(Spinner::new().color(colors.muted))
+            .into_any_element(),
+        Cover::None | Cover::Unavailable { .. } => frame
+            .tooltip(tooltip(if matches!(cover, Cover::None) {
                 "No release chosen, so there is no cover"
             } else {
                 "The Cover Art Archive has no cover for this release"
-            });
-        }
+            }))
+            .child(icon(IconName::Disc3, 56.0, colors.subtle))
+            .into_any_element(),
     }
 }
 
-fn lookup_notice(
-    ui: &mut egui::Ui,
+/// A line of accent text that runs `on_click`.
+fn link(
+    id: impl Into<ElementId>,
+    text: &'static str,
     colors: Palette,
-    session: &Session,
-    command: &mut Option<Command>,
-) {
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> Stateful<Div> {
+    describe_button(div().id(id), text)
+        .cursor_pointer()
+        .text_size(sz(13.0))
+        .text_color(colors.accent)
+        .hover(|style| style.underline())
+        .on_click(on_click)
+        .child(text)
+}
+
+fn lookup_notice(session: &Session, colors: Palette, cx: &Context<ViperApp>) -> Div {
     match &session.lookup {
-        Lookup::Searching(_) => {
-            ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(14.0).color(colors.muted));
-                ui.label(
-                    egui::RichText::new("Looking up the disc on MusicBrainz…")
-                        .size(13.0)
-                        .color(colors.muted),
-                );
-            });
-        }
+        Lookup::Searching(_) => div()
+            .flex()
+            .items_center()
+            .gap(sz(8.0))
+            .child(Spinner::new().small().color(colors.muted))
+            .child(label(
+                "Looking up the disc on MusicBrainz…",
+                13.0,
+                colors.muted,
+            )),
         Lookup::Matched { releases, chosen } if releases.len() > 1 => {
-            ui.horizontal(|ui| {
-                notice(
-                    ui,
+            let labels = releases
+                .iter()
+                .map(|release| SharedString::from(release.label()))
+                .collect::<Vec<_>>();
+            let chosen = *chosen;
+            let weak = cx.weak_entity();
+            div()
+                .flex()
+                .flex_col()
+                .gap(sz(4.0))
+                .child(notice(
                     colors,
-                    icons::CHECK_CIRCLE,
+                    IconName::CircleCheck,
                     colors.accent,
-                    &format!("{} releases have this disc. Pick yours:", releases.len()),
-                );
-            });
-            ui.add_space(4.0);
-            egui::ComboBox::from_id_salt("ripper-release")
-                .selected_text(releases[*chosen].label())
-                .width(ui.available_width().min(520.0))
-                .show_ui(ui, |ui| {
-                    for (index, release) in releases.iter().enumerate() {
-                        if ui
-                            .selectable_label(index == *chosen, release.label())
-                            .clicked()
-                        {
-                            *command = Some(Command::ChooseRelease(index));
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Releases differ in year, country, and sometimes track titles");
+                    format!("{} releases have this disc. Pick yours:", releases.len()),
+                ))
+                .child(
+                    div()
+                        .id("ripper-releases")
+                        .max_w(sz(FIELDS_WIDTH))
+                        .tooltip(tooltip(
+                            "Releases differ in year, country, and sometimes track titles",
+                        ))
+                        .child(
+                            Button::new("ripper-release")
+                                .label(labels[chosen].clone())
+                                .outline()
+                                .small()
+                                .w_full()
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    menu = menu.min_w(px(FIELDS_WIDTH));
+                                    for (index, text) in labels.iter().enumerate() {
+                                        menu = menu.item(
+                                            menu_item(text.clone(), &weak, move |app, _, _| {
+                                                let repaint = app.repaint.clone();
+                                                edit_session(app, |session| {
+                                                    session.choose_release(&repaint, index);
+                                                });
+                                            })
+                                            .checked(index == chosen),
+                                        );
+                                    }
+                                    menu
+                                }),
+                        ),
+                )
         }
         Lookup::Matched { .. } => notice(
-            ui,
             colors,
-            icons::CHECK_CIRCLE,
+            IconName::CircleCheck,
             colors.accent,
             "Found on MusicBrainz. Check the tags before ripping.",
         ),
         Lookup::NotFound => {
-            notice(
-                ui,
+            let url = session.submission_url.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap(sz(4.0))
+                .child(notice(
+                    colors,
+                    IconName::Info,
+                    colors.muted,
+                    "MusicBrainz doesn't know this disc. Fill in the tags yourself.",
+                ))
+                .child(link(
+                    "ripper-submit",
+                    "Add it to MusicBrainz, so its tags fill in next time",
+                    colors,
+                    move |_, _, cx| cx.open_url(&url),
+                ))
+        }
+        Lookup::Failed(error) => div()
+            .flex()
+            .flex_col()
+            .gap(sz(4.0))
+            .child(notice(
                 colors,
-                icons::INFO,
-                colors.muted,
-                "MusicBrainz doesn't know this disc. Fill in the tags yourself.",
-            );
-            ui.hyperlink_to(
-                egui::RichText::new("Add it to MusicBrainz, so its tags fill in next time")
-                    .size(13.0)
-                    .color(colors.accent),
-                &session.submission_url,
-            );
-        }
-        Lookup::Failed(error) => {
-            notice(ui, colors, icons::WARNING, colors.warning, error);
-            ui.horizontal(|ui| {
-                ui.add_space(22.0);
-                if ui
-                    .link(
-                        egui::RichText::new("Try again")
-                            .size(13.0)
-                            .color(colors.accent),
-                    )
-                    .clicked()
-                {
-                    *command = Some(Command::SearchAgain);
-                }
-            });
-        }
+                IconName::TriangleAlert,
+                colors.warning,
+                error.clone(),
+            ))
+            .child(div().pl(sz(22.0)).flex().child(link(
+                "ripper-search-again",
+                "Try again",
+                colors,
+                click(cx, |app, _, _| {
+                    let repaint = app.repaint.clone();
+                    edit_session(app, |session| session.search_again(&repaint));
+                }),
+            ))),
     }
 }
 
-fn album_fields(ui: &mut egui::Ui, colors: Palette, session: &mut Session) {
-    let draft = &mut session.draft;
-    let width = ui.available_width().min(520.0);
-    egui::Grid::new("ripper-album")
-        .num_columns(2)
-        .spacing(egui::vec2(12.0, 8.0))
-        .show(ui, |ui| {
-            field_label(ui, colors, "Album");
-            ui.scope(|ui| {
-                ui.set_width(width - 100.0);
-                connection_text_edit(ui, &mut draft.album, "Album title", false);
-            });
-            ui.end_row();
-
-            field_label(ui, colors, "Album artist");
-            let mut artist = draft.artist.clone();
-            ui.scope(|ui| {
-                ui.set_width(width - 100.0);
-                if connection_text_edit(ui, &mut artist, "Artist", false).changed() {
-                    draft.set_artist(artist);
-                }
-            })
-            .response
-            .on_hover_text("Track artists that match it change with it");
-            ui.end_row();
-
-            field_label(ui, colors, "Year");
-            ui.horizontal(|ui| {
-                ui.scope(|ui| {
-                    ui.set_width(72.0);
-                    connection_text_edit(ui, &mut draft.year, "Year", false);
-                });
-                ui.add_space(16.0);
-                field_label(ui, colors, "Disc");
-                ui.add(
-                    egui::DragValue::new(&mut draft.disc_number).range(1..=draft.disc_count.max(1)),
-                );
-                ui.label(egui::RichText::new("of").size(13.0).color(colors.muted));
-                ui.add(egui::DragValue::new(&mut draft.disc_count).range(1..=99));
-            });
-            ui.end_row();
-        });
-    if draft.disc_number > draft.disc_count {
-        draft.disc_number = draft.disc_count;
-    }
+fn album_fields(
+    app: &mut ViperApp,
+    window: &mut Window,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> Div {
+    let Phase::Ready(session) = &app.ripper.phase else {
+        return div();
+    };
+    let draft = &session.draft;
+    let [album, artist, year, disc, discs] = [
+        draft.album.clone(),
+        draft.artist.clone(),
+        draft.year.clone(),
+        draft.disc_number.to_string(),
+        draft.disc_count.to_string(),
+    ];
+    let album = draft_field(
+        app,
+        "ripper-album".to_owned(),
+        &album,
+        "Album title",
+        window,
+        cx,
+        |session, text| session.draft.album = text.to_owned(),
+    );
+    let artist = draft_field(
+        app,
+        "ripper-artist".to_owned(),
+        &artist,
+        "Artist",
+        window,
+        cx,
+        |session, text| session.draft.set_artist(text.to_owned()),
+    );
+    let year = draft_field(
+        app,
+        "ripper-year".to_owned(),
+        &year,
+        "Year",
+        window,
+        cx,
+        |session, text| session.draft.year = text.to_owned(),
+    );
+    let disc = draft_field(
+        app,
+        "ripper-disc".to_owned(),
+        &disc,
+        "1",
+        window,
+        cx,
+        |session, text| {
+            if let Ok(number) = text.trim().parse::<u32>() {
+                session.draft.disc_number = number.clamp(1, session.draft.disc_count.max(1));
+            }
+        },
+    );
+    let discs = draft_field(
+        app,
+        "ripper-discs".to_owned(),
+        &discs,
+        "1",
+        window,
+        cx,
+        |session, text| {
+            if let Ok(count) = text.trim().parse::<u32>() {
+                let draft = &mut session.draft;
+                draft.disc_count = count.clamp(1, 99);
+                draft.disc_number = draft.disc_number.min(draft.disc_count);
+            }
+        },
+    );
+    let row = |name: &'static str| {
+        div()
+            .flex()
+            .items_center()
+            .gap(sz(12.0))
+            .child(field_label(colors, name).flex_none().w(sz(LABEL_WIDTH)))
+    };
+    let wide = |input: Input| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .max_w(sz(FIELDS_WIDTH - 100.0))
+            .child(input)
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(sz(8.0))
+        .child(row("Album").child(wide(album)))
+        .child(
+            row("Album artist").child(
+                div()
+                    .id("ripper-artist-hint")
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(sz(FIELDS_WIDTH - 100.0))
+                    .tooltip(tooltip("Track artists that match it change with it"))
+                    .child(artist),
+            ),
+        )
+        .child(
+            row("Year")
+                .child(div().flex_none().w(sz(72.0)).child(year))
+                .child(field_label(colors, "Disc").ml(sz(4.0)))
+                .child(div().flex_none().w(sz(48.0)).child(disc))
+                .child(label("of", 13.0, colors.muted))
+                .child(div().flex_none().w(sz(48.0)).child(discs)),
+        )
 }
 
-fn track_list(ui: &mut egui::Ui, colors: Palette, session: &mut Session) {
+fn track_list(
+    app: &mut ViperApp,
+    window: &mut Window,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> Div {
+    let Phase::Ready(session) = &app.ripper.phase else {
+        return div();
+    };
     let various = session.draft.various_artists();
     let all = session.draft.tracks.iter().all(|track| track.include);
-    let none = !session.draft.tracks.iter().any(|track| track.include);
-    egui::Frame::new()
-        .fill(colors.surface)
-        .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(12.0)
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                // In line with the rows' checkboxes, which sit inside the rows' margin.
-                ui.add_space(4.0);
-                let mut every = all;
-                let response = ui
-                    .add(egui::Checkbox::new(&mut every, "").indeterminate(!all && !none))
-                    .on_hover_text(if all {
-                        "Choose no tracks"
-                    } else {
-                        "Choose every track"
-                    });
-                describe_button(&response, "Choose every track");
-                if response.clicked() {
-                    for track in &mut session.draft.tracks {
-                        track.include = !all;
+    let count = session.tracks.len();
+    let tracks = session
+        .tracks
+        .iter()
+        .zip(&session.draft.tracks)
+        .map(|(track, draft)| {
+            (
+                track.number,
+                track.duration(),
+                draft.include,
+                draft.title.clone(),
+                draft.artist.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let rows = tracks
+        .into_iter()
+        .enumerate()
+        .map(|(index, (number, length, include, title, artist))| {
+            let title = draft_field(
+                app,
+                format!("ripper-track-{index}-title"),
+                &title,
+                "Title",
+                window,
+                cx,
+                move |session, text| {
+                    if let Some(track) = session.draft.tracks.get_mut(index) {
+                        track.title = text.to_owned();
                     }
-                }
-                ui.label(
-                    egui::RichText::new(format!("{} tracks", session.tracks.len()))
-                        .size(13.0)
-                        .strong()
-                        .color(colors.text),
-                );
+                },
+            );
+            let artist = various.then(|| {
+                draft_field(
+                    app,
+                    format!("ripper-track-{index}-artist"),
+                    &artist,
+                    "Artist",
+                    window,
+                    cx,
+                    move |session, text| {
+                        if let Some(track) = session.draft.tracks.get_mut(index) {
+                            track.artist = text.to_owned();
+                        }
+                    },
+                )
             });
-            ui.add_space(4.0);
-            let length_width = 52.0;
-            for (track, draft) in session.tracks.iter().zip(&mut session.draft.tracks) {
-                egui::Frame::new()
-                    .corner_radius(6.0)
-                    .inner_margin(egui::Margin::symmetric(4, 0))
-                    .show(ui, |ui| {
-                        ui.set_height(ROW_HEIGHT);
-                        ui.horizontal_centered(|ui| {
-                            ui.checkbox(&mut draft.include, "")
-                                .on_hover_text("Rip this track");
-                            ui.add_sized(
-                                egui::vec2(24.0, ROW_HEIGHT),
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{:>2}", track.number))
-                                        .size(12.0)
-                                        .monospace()
-                                        .color(colors.muted),
-                                ),
-                            );
-                            let text_width = ui.available_width() - length_width - 12.0;
-                            let title_width = if various {
-                                text_width * 0.6
-                            } else {
-                                text_width
-                            };
-                            ui.scope(|ui| {
-                                ui.set_width(title_width);
-                                connection_text_edit(ui, &mut draft.title, "Title", false);
-                            });
-                            if various {
-                                ui.scope(|ui| {
-                                    ui.set_width(text_width - title_width - 8.0);
-                                    connection_text_edit(ui, &mut draft.artist, "Artist", false);
-                                });
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(clock(track.duration()))
-                                            .size(12.0)
-                                            .monospace()
-                                            .color(colors.muted),
-                                    );
-                                },
-                            );
-                        });
-                    });
-            }
-        });
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(8.0))
+                .h(sz(ROW_HEIGHT))
+                .px(sz(4.0))
+                .child(
+                    div()
+                        .id(("ripper-include-hint", index))
+                        .tooltip(tooltip("Rip this track"))
+                        .child(
+                            Checkbox::new(("ripper-include", index))
+                                .checked(include)
+                                .on_click(listen(cx, move |app, checked: &bool, _, _| {
+                                    edit_session(app, |session| {
+                                        if let Some(track) = session.draft.tracks.get_mut(index) {
+                                            track.include = *checked;
+                                        }
+                                    });
+                                })),
+                        ),
+                )
+                .child(
+                    label(format!("{number:>2}"), 12.0, colors.muted)
+                        .font_family("monospace")
+                        .flex_none()
+                        .w(sz(24.0)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .gap(sz(8.0))
+                        .child(div().flex_1().min_w_0().child(title))
+                        .children(artist.map(|artist| div().w(relative(0.4)).child(artist))),
+                )
+                .child(
+                    label(clock(length), 12.0, colors.muted)
+                        .font_family("monospace")
+                        .flex_none(),
+                )
+        })
+        .collect::<Vec<_>>();
+    div()
+        .bg(colors.surface)
+        .border_1()
+        .border_color(colors.border)
+        .rounded(sz(12.0))
+        .px(sz(12.0))
+        .py(sz(10.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(8.0))
+                .px(sz(4.0))
+                .mb(sz(4.0))
+                .child(
+                    div()
+                        .id("ripper-include-all-hint")
+                        .tooltip(tooltip(if all {
+                            "Choose no tracks"
+                        } else {
+                            "Choose every track"
+                        }))
+                        .child(
+                            Checkbox::new("ripper-include-all")
+                                .checked(all)
+                                .on_click(listen(cx, |app, checked: &bool, _, _| {
+                                    edit_session(app, |session| {
+                                        for track in &mut session.draft.tracks {
+                                            track.include = *checked;
+                                        }
+                                    });
+                                })),
+                        ),
+                )
+                .child(
+                    label(format!("{count} tracks"), 13.0, colors.text)
+                        .font_weight(FontWeight::BOLD),
+                ),
+        )
+        .children(rows)
 }
 
 fn rip_footer(
-    ui: &mut egui::Ui,
-    colors: Palette,
+    ripper: &RipperFeature,
     session: &Session,
-    footer: ReadyFooter<'_>,
-    command: &mut Option<Command>,
-) {
+    destination: Option<PathBuf>,
+    library_root: Option<&Path>,
+    colors: Palette,
+    cx: &Context<ViperApp>,
+) -> Div {
+    let paranoia_missing = ripper.needs_paranoia();
     let chosen = session
         .draft
         .tracks
         .iter()
         .filter(|track| track.include)
         .count();
-    let blocked = if footer.paranoia_missing {
+    let blocked = if paranoia_missing {
         Some("Install cdparanoia to rip from this drive")
     } else if chosen == 0 {
         Some("Choose at least one track")
-    } else if footer.destination.is_none() {
+    } else if destination.is_none() {
         Some("Choose where the album goes")
     } else {
         None
     };
-    ui.horizontal(|ui| {
-        let label = match chosen {
-            1 => "Rip 1 track".to_owned(),
-            count => format!("Rip {count} tracks"),
-        };
-        if primary_button(ui, colors, &label, blocked.is_none()).clicked() {
-            if let Some(root) = footer.destination {
-                *command = Some(Command::Rip(root.to_path_buf()));
-            }
+    let rip_label = match chosen {
+        1 => "Rip 1 track".to_owned(),
+        count => format!("Rip {count} tracks"),
+    };
+    let summary = match blocked {
+        Some(reason) => {
+            let tint = if paranoia_missing {
+                colors.danger
+            } else {
+                colors.muted
+            };
+            label(reason, 13.0, tint)
         }
-        ui.add_space(8.0);
-        match blocked {
-            Some(reason) => {
-                let tint = if footer.paranoia_missing {
-                    colors.danger
-                } else {
-                    colors.muted
-                };
-                ui.label(egui::RichText::new(reason).size(13.0).color(tint));
-            }
-            None => {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} · FLAC, tagged, with the cover",
-                        clock(session.duration())
-                    ))
-                    .size(13.0)
-                    .color(colors.muted),
-                );
-            }
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.checkbox(footer.eject_when_done, "Eject when done")
-                .on_hover_text("Eject the disc once every track is ripped");
-        });
-    });
-    ui.add_space(6.0);
-    let (path, tint) = match footer.destination {
+        None => label(
+            format!(
+                "{} · FLAC, tagged, with the cover",
+                clock(session.duration())
+            ),
+            13.0,
+            colors.muted,
+        ),
+    };
+    let (path, tint) = match &destination {
         Some(root) => (
             rip::album_folder(
                 root,
@@ -686,341 +839,383 @@ fn rip_footer(
         ),
         None => ("No folder chosen".to_owned(), colors.warning),
     };
-    let outside_library = match (footer.destination, footer.library_root) {
+    let outside_library = match (&destination, library_root) {
         (Some(destination), Some(root)) => !destination.starts_with(root),
         (Some(_), None) => true,
         (None, _) => false,
     };
-    ui.horizontal(|ui| {
-        field_label(ui, colors, "Saves to");
-        // Leave room for the link after a long path.
-        let width = (ui.available_width() - 64.0).max(0.0);
-        ui.allocate_ui(egui::vec2(width, 20.0), |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(path).size(13.0).color(tint)).truncate());
-        });
-        if ui
-            .link(
-                egui::RichText::new("Change…")
-                    .size(13.0)
-                    .color(colors.accent),
-            )
-            .clicked()
-        {
-            *command = Some(Command::ChooseDestination);
+    let root = destination.clone();
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(sz(6.0))
+        .bg(colors.panel)
+        .border_t_1()
+        .border_color(colors.border)
+        .px(sz(24.0))
+        .py(sz(12.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(8.0))
+                .child(primary_button(
+                    "ripper-rip",
+                    rip_label,
+                    blocked.is_none(),
+                    colors,
+                    click(cx, move |app, _, _| {
+                        if let Some(root) = &root {
+                            app.ripper.start_rip(&app.repaint, root);
+                        }
+                    }),
+                ))
+                .child(summary.flex_1().min_w_0())
+                .child(
+                    div()
+                        .id("ripper-eject-hint")
+                        .tooltip(tooltip("Eject the disc once every track is ripped"))
+                        .child(
+                            Checkbox::new("ripper-eject-when-done")
+                                .label("Eject when done")
+                                .checked(ripper.eject_when_done)
+                                .on_click(listen(cx, |app, checked: &bool, _, _| {
+                                    app.ripper.eject_when_done = *checked;
+                                })),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(8.0))
+                .child(field_label(colors, "Saves to").flex_none())
+                .child(label(path, 13.0, tint).min_w_0().truncate())
+                .child(
+                    link(
+                        "ripper-destination",
+                        "Change…",
+                        colors,
+                        click(cx, |_, _, cx| choose_destination(cx)),
+                    )
+                    .flex_none(),
+                ),
+        )
+        .when(outside_library, |footer| {
+            footer.child(notice(
+                colors,
+                IconName::Info,
+                colors.muted,
+                "This folder is outside your library, so the album won't appear in Viper Music \
+                 until you add it.",
+            ))
+        })
+}
+
+/// A progress bar filled to `fraction`.
+fn bar(fraction: f32, height: f32, colors: Palette) -> Div {
+    div()
+        .h(sz(height))
+        .rounded(sz(height / 2.0))
+        .bg(colors.border)
+        .child(
+            div()
+                .h_full()
+                .w(relative(fraction.clamp(0.0, 1.0)))
+                .rounded(sz(height / 2.0))
+                .bg(colors.accent),
+        )
+}
+
+fn ripping(rip: &Rip, cancelling: bool, colors: Palette, cx: &Context<ViperApp>) -> Div {
+    let done = rip.count(|row| *row == TrackProgress::Done);
+    let total = rip.count(|row| *row != TrackProgress::Skipped);
+    let progress = rip.progress();
+    let detail = if cancelling {
+        "Stopping after the track being read…".to_owned()
+    } else {
+        match rip.remaining() {
+            Some(left) => format!("{done} of {total} tracks · {}", left_text(left)),
+            None => format!("{done} of {total} tracks"),
         }
-    });
-    if outside_library {
-        notice(
-            ui,
-            colors,
-            icons::INFO,
-            colors.muted,
-            "This folder is outside your library, so the album won't appear in Viper Music \
-             until you add it.",
-        );
-    }
+    };
+    div()
+        .child(rip_header(rip, colors))
+        .child(
+            card(colors)
+                .mt(sz(16.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            label(
+                                format!("Ripping · {:.0}%", progress * 100.0),
+                                15.0,
+                                colors.text,
+                            )
+                            .flex_1()
+                            .font_weight(FontWeight::BOLD),
+                        )
+                        .child(
+                            action_button(
+                                "ripper-cancel",
+                                if cancelling { "Stopping…" } else { "Cancel" },
+                                !cancelling,
+                                colors,
+                                click(cx, |app, _, _| app.ripper.cancel()),
+                            )
+                            .tooltip(tooltip("Stop ripping; tracks already ripped are kept")),
+                        ),
+                )
+                .child(bar(progress, 8.0, colors).mt(sz(8.0)))
+                .child(label(detail, 12.0, colors.muted).mt(sz(6.0))),
+        )
+        .child(progress_rows(rip, colors).mt(sz(16.0)))
 }
 
-fn ripping(
-    ui: &mut egui::Ui,
-    colors: Palette,
-    rip: &Rip,
-    cancelling: bool,
-    command: &mut Option<Command>,
-) {
-    rip_header(ui, colors, rip);
-    ui.add_space(16.0);
-    card(ui, colors, |ui| {
-        let done = rip.count(|row| *row == TrackProgress::Done);
-        let total = rip.count(|row| *row != TrackProgress::Skipped);
-        let progress = rip.progress();
-        let detail = if cancelling {
-            "Stopping after the track being read…".to_owned()
-        } else {
-            match rip.remaining() {
-                Some(left) => format!("{done} of {total} tracks · {}", left_text(left)),
-                None => format!("{done} of {total} tracks"),
-            }
-        };
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("Ripping · {:.0}%", progress * 100.0))
-                    .size(15.0)
-                    .strong()
-                    .color(colors.text),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if cancelling { "Stopping…" } else { "Cancel" };
-                if action_button(ui, label, !cancelling)
-                    .on_hover_text("Stop ripping; tracks already ripped are kept")
-                    .clicked()
-                {
-                    *command = Some(Command::Cancel);
-                }
-            });
-        });
-        ui.add_space(8.0);
-        ui.add(
-            egui::ProgressBar::new(progress)
-                .fill(colors.accent)
-                .desired_height(8.0)
-                .corner_radius(4.0),
-        );
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(detail).size(12.0).color(colors.muted));
-    });
-    ui.add_space(16.0);
-    progress_rows(ui, colors, rip);
-}
-
-fn done(
-    ui: &mut egui::Ui,
-    colors: Palette,
-    rip: &Rip,
-    library: &LibraryFeature,
-    command: &mut Option<Command>,
-) {
-    rip_header(ui, colors, rip);
-    ui.add_space(16.0);
+fn done(rip: &Rip, album: Option<usize>, colors: Palette, cx: &Context<ViperApp>) -> Div {
     let ripped = rip.count(|row| *row == TrackProgress::Done);
     let failed = rip.count(|row| matches!(row, TrackProgress::Failed(_)));
-    let draft = &rip.session.draft;
-    let album =
-        library.model.albums.iter().position(|album| {
-            album.title == draft.album.trim() && album.artist == draft.artist.trim()
-        });
-    card(ui, colors, |ui| {
-        if failed == 0 {
-            card_title(ui, colors, icons::CHECK_CIRCLE, "Ripped");
-            card_text(
-                ui,
+    let summary = if failed == 0 {
+        card(colors)
+            .child(card_title(colors, IconName::CircleCheck, "Ripped"))
+            .child(card_text(
                 colors,
-                &format!(
+                format!(
                     "{ripped} {} saved to {}.",
                     if ripped == 1 { "track" } else { "tracks" },
                     rip.folder.display()
                 ),
-            );
-        } else {
-            card_title(
-                ui,
+            ))
+    } else {
+        card(colors)
+            .child(card_title(
                 colors,
-                icons::WARNING,
-                &format!("{failed} of {} tracks could not be read", ripped + failed),
-            );
-            card_text(
-                ui,
+                IconName::TriangleAlert,
+                format!("{failed} of {} tracks could not be read", ripped + failed),
+            ))
+            .child(card_text(
                 colors,
                 "Scratches and dirt cause most read errors. Clean the disc and rip the failed \
                  tracks again; the tracks that worked are kept.",
-            );
-        }
-        if rip.ejected {
-            card_text(
-                ui,
+            ))
+    };
+    let main = if failed > 0 && !rip.ejected {
+        Some(primary_button(
+            "ripper-retry",
+            "Rip failed tracks again",
+            true,
+            colors,
+            click(cx, |app, _, _| {
+                let repaint = app.repaint.clone();
+                app.ripper.retry_failed(&repaint);
+            }),
+        ))
+    } else {
+        album.map(|index| {
+            primary_button(
+                "ripper-show-album",
+                "Show in Albums",
+                true,
                 colors,
-                "The disc was ejected. Insert another to rip it.",
-            );
-        }
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            if failed > 0 && !rip.ejected {
-                if primary_button(ui, colors, "Rip failed tracks again", true).clicked() {
-                    *command = Some(Command::RetryFailed);
+                click(cx, move |app, _, _| {
+                    app.workbench.open_album(&mut app.library.view, index);
+                }),
+            )
+        })
+    };
+    let folder = rip.folder.clone();
+    let buttons = div()
+        .flex()
+        .flex_wrap()
+        .gap(sz(8.0))
+        .mt(sz(14.0))
+        .children(main)
+        .child(action_button(
+            "ripper-open-folder",
+            "Open folder",
+            true,
+            colors,
+            click(cx, move |app, _, _| {
+                if let Err(error) = desktop::open_folder(&folder) {
+                    app.toasts
+                        .push(format!("Could not open the folder: {error}"));
                 }
-            } else if let Some(index) = album {
-                if primary_button(ui, colors, "Show in Albums", true).clicked() {
-                    *command = Some(Command::ShowAlbum(index));
-                }
-            }
-            if action_button(ui, "Open folder", true).clicked() {
-                *command = Some(Command::OpenFolder(rip.folder.clone()));
-            }
-            if !rip.ejected && action_button(ui, "Edit tags and rip again", true).clicked() {
-                *command = Some(Command::EditAgain);
-            }
-            if action_button(ui, "Rip another CD", true).clicked() {
-                *command = Some(Command::NextDisc);
-            }
-        });
-    });
-    ui.add_space(16.0);
-    progress_rows(ui, colors, rip);
+            }),
+        ))
+        .when(!rip.ejected, |buttons| {
+            buttons.child(action_button(
+                "ripper-edit-again",
+                "Edit tags and rip again",
+                true,
+                colors,
+                click(cx, |app, _, _| app.ripper.edit_again()),
+            ))
+        })
+        .child(action_button(
+            "ripper-next-disc",
+            "Rip another CD",
+            true,
+            colors,
+            click(cx, |app, _, _| app.ripper.next_disc(&mut app.toasts)),
+        ));
+    div()
+        .child(rip_header(rip, colors))
+        .child(
+            summary
+                .mt(sz(16.0))
+                .when(rip.ejected, |card| {
+                    card.child(card_text(
+                        colors,
+                        "The disc was ejected. Insert another to rip it.",
+                    ))
+                })
+                .child(buttons),
+        )
+        .child(progress_rows(rip, colors).mt(sz(16.0)))
 }
 
 /// The album being ripped: its cover, title, and artist.
-fn rip_header(ui: &mut egui::Ui, colors: Palette, rip: &Rip) {
+fn rip_header(rip: &Rip, colors: Palette) -> Div {
     let draft = &rip.session.draft;
-    ui.horizontal(|ui| {
-        if let Cover::Ready { texture, .. } = &rip.session.cover {
-            ui.add(egui::Image::new((texture.id(), egui::vec2(72.0, 72.0))).corner_radius(8.0));
-            ui.add_space(12.0);
-        }
-        ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new(draft.album.trim())
-                    .size(19.0)
-                    .strong()
-                    .color(colors.text),
-            );
-            ui.label(
-                egui::RichText::new(draft.artist.trim())
-                    .size(14.0)
-                    .color(colors.muted),
-            );
-        });
-    });
-}
-
-fn progress_rows(ui: &mut egui::Ui, colors: Palette, rip: &Rip) {
-    egui::Frame::new()
-        .fill(colors.surface)
-        .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(12.0)
-        .inner_margin(egui::Margin::symmetric(16, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            for ((track, draft), row) in rip
-                .session
-                .tracks
-                .iter()
-                .zip(&rip.session.draft.tracks)
-                .zip(&rip.rows)
-            {
-                let (icon, tint, status) = match row {
-                    TrackProgress::Skipped => (icons::MINUS, colors.subtle, "Skipped".to_owned()),
-                    TrackProgress::Queued => (icons::CLOCK, colors.subtle, "Waiting".to_owned()),
-                    TrackProgress::Reading { read } => (
-                        icons::DISC,
-                        colors.accent,
-                        format!("{:.0}%", *read as f64 * 100.0 / track.bytes() as f64),
-                    ),
-                    TrackProgress::Done => (icons::CHECK, colors.accent, "Ripped".to_owned()),
-                    TrackProgress::Failed(_) => {
-                        (icons::WARNING, colors.danger, "Failed".to_owned())
-                    }
-                };
-                let response = ui
-                    .horizontal(|ui| {
-                        ui.set_height(28.0);
-                        ui.label(egui::RichText::new(icon).font(icon_font(15.0)).color(tint));
-                        ui.label(
-                            egui::RichText::new(format!("{:>2}", track.number))
-                                .size(12.0)
-                                .monospace()
-                                .color(colors.muted),
-                        );
-                        let title_color = if *row == TrackProgress::Skipped {
-                            colors.subtle
-                        } else {
-                            colors.text
-                        };
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(draft.title.trim())
-                                    .size(13.0)
-                                    .color(title_color),
-                            )
-                            .truncate(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(status).size(12.0).color(tint));
-                            if let TrackProgress::Reading { read } = row {
-                                ui.add(
-                                    egui::ProgressBar::new(
-                                        (*read as f64 / track.bytes() as f64) as f32,
-                                    )
-                                    .fill(colors.accent)
-                                    .desired_width(120.0)
-                                    .desired_height(4.0),
-                                );
-                            }
-                        });
-                    })
-                    .response;
-                if let TrackProgress::Failed(error) = row {
-                    response.on_hover_text(error);
-                }
-            }
-        });
-}
-
-fn card(ui: &mut egui::Ui, colors: Palette, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(colors.surface)
-        .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(12.0)
-        // The same inset as the track list's rows, so stacked cards and lists line up inside.
-        .inner_margin(egui::Margin::symmetric(16, 20))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            contents(ui);
-        });
-}
-
-fn busy_card(ui: &mut egui::Ui, colors: Palette, title: &str, text: &str) {
-    card(ui, colors, |ui| {
-        ui.horizontal(|ui| {
-            ui.add(egui::Spinner::new().size(18.0).color(colors.accent));
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(title)
-                    .size(19.0)
-                    .strong()
-                    .color(colors.text),
-            );
-        });
-        ui.add_space(5.0);
-        card_text(ui, colors, text);
-    });
-}
-
-fn card_title(ui: &mut egui::Ui, colors: Palette, icon: &str, title: &str) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(icon)
-                .font(icon_font(20.0))
-                .color(colors.accent),
-        );
-        ui.label(
-            egui::RichText::new(title)
-                .size(19.0)
-                .strong()
-                .color(colors.text),
-        );
-    });
-    ui.add_space(5.0);
-}
-
-fn card_text(ui: &mut egui::Ui, colors: Palette, text: &str) {
-    ui.label(egui::RichText::new(text).size(13.0).color(colors.muted));
-}
-
-fn icon_button(
-    ui: &mut egui::Ui,
-    colors: Palette,
-    icon: &str,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
-    let sense = if enabled {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
+    let cover = match &rip.session.cover {
+        Cover::Ready { texture, .. } => Some(
+            img(texture.clone())
+                .flex_none()
+                .size(sz(72.0))
+                .rounded(sz(8.0)),
+        ),
+        _ => None,
     };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), sense);
-    describe_button(&response, label);
-    if enabled && response.hovered() {
-        ui.painter().rect_filled(rect, 8.0, colors.hover);
-    }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        icon_font(18.0),
-        if enabled { colors.text } else { colors.subtle },
-    );
-    response.on_hover_text(label)
+    div()
+        .flex()
+        .items_center()
+        .gap(sz(12.0))
+        .children(cover)
+        .child(
+            div()
+                .min_w_0()
+                .child(
+                    label(draft.album.trim().to_owned(), 19.0, colors.text)
+                        .font_weight(FontWeight::BOLD),
+                )
+                .child(label(draft.artist.trim().to_owned(), 14.0, colors.muted)),
+        )
+}
+
+fn progress_rows(rip: &Rip, colors: Palette) -> Div {
+    let rows = rip
+        .session
+        .tracks
+        .iter()
+        .zip(&rip.session.draft.tracks)
+        .zip(&rip.rows)
+        .enumerate()
+        .map(|(index, ((track, draft), row))| {
+            let fraction = |read: u64| read as f64 / track.bytes() as f64;
+            let (name, tint, status) = match row {
+                TrackProgress::Skipped => (IconName::Minus, colors.subtle, "Skipped".to_owned()),
+                TrackProgress::Queued => (IconName::Clock, colors.subtle, "Waiting".to_owned()),
+                TrackProgress::Reading { read } => (
+                    IconName::Disc,
+                    colors.accent,
+                    format!("{:.0}%", fraction(*read) * 100.0),
+                ),
+                TrackProgress::Done => (IconName::Check, colors.accent, "Ripped".to_owned()),
+                TrackProgress::Failed(_) => {
+                    (IconName::TriangleAlert, colors.danger, "Failed".to_owned())
+                }
+            };
+            let title_color = if *row == TrackProgress::Skipped {
+                colors.subtle
+            } else {
+                colors.text
+            };
+            let reading = match row {
+                TrackProgress::Reading { read } => Some(
+                    bar(fraction(*read) as f32, 4.0, colors)
+                        .flex_none()
+                        .w(sz(120.0)),
+                ),
+                _ => None,
+            };
+            let error = match row {
+                TrackProgress::Failed(error) => Some(error.clone()),
+                _ => None,
+            };
+            div()
+                .id(("ripper-progress", index))
+                .flex()
+                .items_center()
+                .gap(sz(8.0))
+                .h(sz(28.0))
+                .child(icon(name, 15.0, tint))
+                .child(
+                    label(format!("{:>2}", track.number), 12.0, colors.muted)
+                        .font_family("monospace")
+                        .flex_none(),
+                )
+                .child(
+                    label(draft.title.trim().to_owned(), 13.0, title_color)
+                        .flex_1()
+                        .min_w_0()
+                        .truncate(),
+                )
+                .children(reading)
+                .child(label(status, 12.0, tint).flex_none())
+                .when_some(error, |row, error| row.tooltip(tooltip(error)))
+        })
+        .collect::<Vec<_>>();
+    div()
+        .bg(colors.surface)
+        .border_1()
+        .border_color(colors.border)
+        .rounded(sz(12.0))
+        .px(sz(16.0))
+        .py(sz(10.0))
+        .children(rows)
+}
+
+fn card(colors: Palette) -> Div {
+    div()
+        .bg(colors.surface)
+        .border_1()
+        .border_color(colors.border)
+        .rounded(sz(12.0))
+        // The same inset as the track list's rows, so stacked cards and lists line up inside.
+        .px(sz(16.0))
+        .py(sz(20.0))
+}
+
+fn busy_card(colors: Palette, title: &'static str, text: &'static str) -> Div {
+    card(colors)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(8.0))
+                .mb(sz(5.0))
+                .child(Spinner::new().color(colors.accent))
+                .child(label(title, 19.0, colors.text).font_weight(FontWeight::BOLD)),
+        )
+        .child(card_text(colors, text))
+}
+
+fn card_title(colors: Palette, name: IconName, title: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(sz(8.0))
+        .mb(sz(5.0))
+        .child(icon(name, 20.0, colors.accent))
+        .child(label(title, 19.0, colors.text).font_weight(FontWeight::BOLD))
+}
+
+fn card_text(colors: Palette, text: impl Into<SharedString>) -> Div {
+    label(text, 13.0, colors.muted)
 }
 
 /// `m:ss`, or `h:mm:ss` from an hour.

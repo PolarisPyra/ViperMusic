@@ -1,7 +1,7 @@
 pub(crate) struct PreferencesState {
     pub(crate) category: Option<super::screen::Category>,
     /// Preview textures for the app logo picker, filled the first time it is shown.
-    pub(crate) logo_thumbnails: Vec<eframe::egui::TextureHandle>,
+    pub(crate) logo_thumbnails: Vec<std::sync::Arc<gpui::RenderImage>>,
     /// Where updating stands, refreshed each frame for the About page.
     pub(crate) update_state: crate::platform::updates::UpdateState,
     pub(crate) lastfm_api_key_draft: String,
@@ -17,10 +17,7 @@ pub(crate) struct PreferencesState {
 }
 
 impl PreferencesState {
-    pub(crate) fn new(
-        lastfm_api_key_draft: String,
-        lastfm_api_secret_draft: String,
-    ) -> Self {
+    pub(crate) fn new(lastfm_api_key_draft: String, lastfm_api_secret_draft: String) -> Self {
         Self {
             category: None,
             logo_thumbnails: Vec::new(),

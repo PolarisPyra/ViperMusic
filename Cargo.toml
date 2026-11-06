@@ -7,9 +7,6 @@ edition = "2021"
 dotenvy = "0.15"
 
 [dependencies]
-eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
-egui-phosphor = { version = "0.14", features = ["fill"] }
-rfd = "0.15"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 serde_json = "1"
 single-instance = "0.3.3"
@@ -22,14 +19,12 @@ base64 = "0.22"
 lofty = "0.25.1"
 audex = "0.2"
 rayon = "1.12.0"
-font-kit = "0.14.3"
 notify = "8.2"
 rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all"] }
 symphonia = { version = "0.5.5", features = ["all"] }
-symphonia-adapter-libopus = "0.2"
 discord-rich-presence = "1.1.0"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls", "json", "gzip"] }
 md5 = "0.7"
 webbrowser = "1"
 keyring = { version = "4.2", default-features = false, features = ["v1"] }
@@ -37,14 +32,19 @@ semver = "1"
 sha2 = "0.11"
 flacenc = "0.5"
 sha1 = "0.11"
+gpui = { version = "=0.3.11", package = "gpui-pre" }
+gpui-component = "0.9.0"
+gpui_platform = { version = "=0.3.11", package = "gpui-pre-platform", default-features = false, features = ["font-kit", "x11", "wayland"] }
+async-channel = "2"
+futures-lite = "2"
+gpui-kit-assets = "0.9.0"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tray-icon = { version = "0.26.1", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-async-std = "1.13"
-ksni = { version = "0.3.7", features = ["blocking"] }
-futures-lite = "2"
+smol = "2"
+ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }
 libc = "0.2"
 mpris-server = "0.10"
 pavao = "0.3.1"
@@ -56,6 +56,13 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Devices_Cdrom", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_WindowsProgramming"] }
 
-[profile.release]
+# GPUI drops most frames unoptimized. Dependencies build once, so optimizing them keeps debug
+# rebuilds of Viper quick while it still scrolls smoothly.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Shipped builds (scripts/build.sh) trade a slower link for a faster binary; `--release` stays quick.
+[profile.dist]
+inherits = "release"
 lto = "thin"
 codegen-units = 1

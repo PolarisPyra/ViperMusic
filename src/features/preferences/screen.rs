@@ -1,157 +1,174 @@
 use super::state::PreferencesState;
 use crate::{
-    features::library::state::LibraryFeature,
+    app::ViperApp,
     platform::{
-        persistence::settings::{LastFmSettings, Settings, StartupView},
-        presence::{
-            discord::{self, PresenceStatus},
-            lastfm::LastFmService,
-        },
+        persistence::settings::{Settings, StartupView},
+        presence::discord::{self, PresenceStatus},
         updates::{UpdateState, RELEASES_URL},
     },
     shared::{
         action::AppAction,
+        artwork::render_image,
         logo::LogoColorway,
         ui::{
-            controls::{action_button, close_button, connection_text_edit, modal_frame},
-            theme::{self, ThemeId},
+            controls::{
+                action_button, backdrop, click, close_button, horizontal_fraction, icon_button,
+                label, listen, measure, modal_frame, sz, text_field, tooltip, unzoomed,
+                DragPreview,
+            },
+            icons::{icon, IconName},
+            text_input::FieldOptions,
+            theme::{self, Palette, ThemeId},
         },
     },
-    workbench::{Page, WorkbenchState},
+    workbench::Page,
 };
-use eframe::egui;
+use gpui::{
+    div, img, prelude::*, px, relative, AnyElement, App, ClickEvent, ClipboardItem, Context, Div,
+    DragMoveEvent, FontWeight, MouseButton, Role, SharedString, Window,
+};
+use gpui_component::{checkbox::Checkbox, input::Input, Disableable};
 
-pub(crate) fn show(
-    ctx: &egui::Context,
-    workbench: &mut WorkbenchState,
-    preferences: &mut PreferencesState,
-    settings: &mut Settings,
-    library: &LibraryFeature,
-    lastfm_service: &LastFmService,
-    lastfm_settings: &LastFmSettings,
-) -> Option<AppAction> {
-    let colors = theme::colors(ctx);
-    if !workbench.show_preferences {
+/// Prefix of the keys of the dialog's text fields.
+const FIELD_PREFIX: &str = "preferences-";
+const MAX_WIDTH: f32 = 760.0;
+/// Space between the dialog and the window's edges.
+const MARGIN: f32 = 24.0;
+const MIN_ZOOM: f32 = 0.75;
+const MAX_ZOOM: f32 = 2.0;
+const ZOOM_STEP: f32 = 0.05;
+
+/// Marker dragged by the interface scale slider's knob.
+struct ZoomDrag;
+
+/// Draw the Preferences dialog while it is open.
+///
+/// # Arguments
+/// * `app` - Application holding the settings.
+/// * `window` - Window being drawn.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The dialog over a backdrop, or `None` while it is closed.
+pub(crate) fn render(
+    app: &mut ViperApp,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> Option<AnyElement> {
+    if app.ui.zoom_dragging && !cx.has_active_drag() {
+        app.ui.zoom_dragging = false;
+        app.save_settings();
+    }
+    if !app.workbench.show_preferences {
         return None;
     }
-    let mut action = None;
-
-    let screen_size = ctx.content_rect().size();
-    let margin = 24.0_f32.min(screen_size.x * 0.05).min(screen_size.y * 0.05);
-    let modal_size = egui::vec2(
-        (screen_size.x - margin * 2.0).clamp(0.0, 760.0),
-        (screen_size.y - margin * 2.0).max(0.0),
+    let colors = theme::colors(cx);
+    let viewport = window.viewport_size();
+    let (screen_width, screen_height) = (
+        unzoomed(viewport.width, window),
+        unzoomed(viewport.height, window),
     );
-    let content_size = (modal_size - egui::vec2(36.0, 36.0)).max(egui::Vec2::ZERO);
-    let mut close_requested = false;
-
-    let response = egui::Modal::new(egui::Id::new("preferences-modal"))
-        .frame(modal_frame(colors))
-        .backdrop_color(colors.backdrop)
-        .show(ctx, |ui| {
-            ui.set_min_size(content_size);
-            ui.set_max_size(content_size);
-
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("Preferences")
-                            .size(23.0)
-                            .strong()
-                            .color(colors.text),
-                    );
-                    ui.label(
-                        egui::RichText::new(
-                            "Manage your library, connections, and startup experience",
-                        )
-                        .size(12.0)
-                        .color(colors.muted),
-                    );
-                });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close_requested = close_button(ui, "Close preferences");
-                });
-            });
-
-            ui.add_space(18.0);
-            category_tabs(ui, preferences);
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(12.0);
-
-            egui::ScrollArea::vertical()
-                .id_salt("preferences-content")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    match preferences.category.unwrap_or(Category::General) {
-                        Category::General => show_general(ui, settings, &mut action),
-                        Category::Connections => {
-                            show_connections(ui, preferences, settings, library, &mut action)
-                        }
-                        Category::View => show_view(ui, settings, &mut action),
-                        Category::Theme => show_theme(ui, preferences, settings, &mut action),
-                        Category::Audio => show_audio(ui, settings, &mut action),
-                        Category::Services => show_services(
-                            ui,
-                            preferences,
-                            settings,
-                            lastfm_service,
-                            lastfm_settings,
-                            &mut action,
-                        ),
-                        Category::About => show_about(ui, &preferences.update_state, &mut action),
-                    }
-                });
-        });
-
-    if close_requested || response.should_close() {
-        workbench.show_preferences = false;
-    }
-    action
+    let margin = MARGIN.min(screen_width * 0.05).min(screen_height * 0.05);
+    let category = app.preferences.category.unwrap_or(Category::General);
+    let content = match category {
+        Category::General => general(app, colors, cx),
+        Category::Audio => audio(app, colors, cx),
+        Category::Connections => connections(app, colors, window, cx),
+        Category::Theme => theme_page(app, colors, cx),
+        Category::View => view(app, colors, cx),
+        Category::Services => services(app, colors, window, cx),
+        Category::About => about(app, colors, cx),
+    };
+    let header = div()
+        .flex()
+        .items_start()
+        .justify_between()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .child(label("Preferences", 23.0, colors.text).font_weight(FontWeight::BOLD))
+                .child(label(
+                    "Manage your library, connections, and startup experience",
+                    12.0,
+                    colors.muted,
+                )),
+        )
+        .child(close_button(
+            "preferences-close",
+            "Close preferences",
+            colors,
+            click(cx, |app, _, _| close(app)),
+        ));
+    Some(
+        backdrop("preferences-backdrop", colors)
+            .on_click(click(cx, |app, _, _| close(app)))
+            .child(
+                modal_frame(colors)
+                    .w(sz((screen_width - margin * 2.0).clamp(0.0, MAX_WIDTH)))
+                    .h(sz((screen_height - margin * 2.0).max(0.0)))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(header)
+                    .child(
+                        div()
+                            .mt(sz(18.0))
+                            .child(category_tabs(category, colors, cx)),
+                    )
+                    .child(div().my(sz(12.0)).h(px(1.0)).bg(colors.border))
+                    .child(
+                        div()
+                            .id("preferences-content")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .pt(sz(8.0))
+                            .text_size(sz(13.0))
+                            .text_color(colors.text)
+                            .child(content),
+                    ),
+            )
+            .into_any_element(),
+    )
 }
 
-fn category_tabs(ui: &mut egui::Ui, preferences: &mut PreferencesState) {
-    let colors = theme::colors(ui.ctx());
-    let mut selected = preferences.category.unwrap_or(Category::General);
-    egui::ScrollArea::horizontal()
-        .id_salt("preferences-category-tabs")
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                for category in Category::ALL {
-                    let is_selected = selected == category;
-                    let response = ui
-                        .scope(|ui| {
-                            let widgets = &mut ui.visuals_mut().widgets;
-                            widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-                            widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                            widgets.hovered.bg_fill = colors.surface;
-                            widgets.hovered.bg_stroke = egui::Stroke::NONE;
-                            widgets.active.bg_fill = colors.surface;
-                            widgets.active.bg_stroke = egui::Stroke::NONE;
-                            ui.spacing_mut().button_padding = egui::vec2(11.0, 7.0);
-                            ui.selectable_label(
-                                is_selected,
-                                egui::RichText::new(category.label()).size(12.0).color(
-                                    if is_selected {
-                                        colors.text
-                                    } else {
-                                        colors.muted
-                                    },
-                                ),
-                            )
-                        })
-                        .inner;
-                    if response.clicked() {
-                        selected = category;
-                    }
-                }
-            });
-        });
-    preferences.category = Some(selected);
+fn close(app: &mut ViperApp) {
+    app.workbench.show_preferences = false;
+    app.inputs.remove_prefixed(FIELD_PREFIX);
+}
+
+fn category_tabs(selected: Category, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    div()
+        .id("preferences-category-tabs")
+        .flex()
+        .gap(sz(6.0))
+        .overflow_x_scroll()
+        .children(Category::ALL.map(|category| {
+            let is_selected = selected == category;
+            div()
+                .id(SharedString::from(category.label()))
+                .role(Role::Tab)
+                .aria_label(category.label())
+                .flex_none()
+                .px(sz(11.0))
+                .py(sz(7.0))
+                .rounded(sz(6.0))
+                .cursor_pointer()
+                .text_size(sz(12.0))
+                .text_color(if is_selected {
+                    colors.text
+                } else {
+                    colors.muted
+                })
+                .when(is_selected, |tab| tab.bg(colors.selected))
+                .when(!is_selected, |tab| {
+                    tab.hover(|style| style.bg(colors.surface))
+                })
+                .child(category.label())
+                .on_click(click(cx, move |app, _, _| {
+                    app.preferences.category = Some(category);
+                }))
+        }))
+        .into_any_element()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,341 +214,428 @@ impl Category {
     }
 }
 
-fn show_general(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
-    let colors = theme::colors(ui.ctx());
-    ui.set_min_width(420.0);
-    ui.add_space(8.0);
-    section_title(ui, "Music library");
-    ui.label("Choose the folder that contains your music.");
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        ui.set_width(ui.available_width());
-        if let Some(path) = &settings.music_path {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(path.display().to_string())
-                        .size(12.0)
-                        .color(ui.visuals().widgets.inactive.text_color()),
-                )
-                .sense(egui::Sense::hover())
-                .truncate(),
-            );
-        } else {
-            ui.label(
-                egui::RichText::new("No music folder selected")
-                    .size(12.0)
-                    .color(ui.visuals().widgets.inactive.text_color()),
-            );
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let button = egui::Button::new(
-                egui::RichText::new("Choose folder")
-                    .size(12.0)
-                    .strong()
-                    .color(colors.text),
-            )
-            .fill(colors.surface)
-            .stroke(egui::Stroke::new(1.0_f32, colors.border))
-            .corner_radius(7.0)
-            .min_size(egui::vec2(112.0, 34.0));
-            if ui.add(button).clicked() {
-                *action = Some(AppAction::ChooseMusicFolder);
-            }
-        });
-    });
-
-    ui.add_space(28.0);
-    section_title(ui, "Startup");
-    ui.label("Choose which page opens when the player starts.");
-    ui.add_space(12.0);
-
-    let startup_view = settings.startup_view;
-    let mut new_startup_view = startup_view;
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 6.0;
-        for (page, label) in [
-            (StartupView::Home, "Home"),
-            (StartupView::Albums, "Albums"),
-            (StartupView::Songs, "Songs"),
-        ] {
-            if choice_row(ui, label, new_startup_view == page, "Current startup page").clicked() {
-                new_startup_view = page;
-            }
-        }
-    });
-    if new_startup_view != startup_view {
-        settings.startup_view = new_startup_view;
-        *action = Some(AppAction::SaveSettings);
-    }
+/// A page of the dialog: a column of sections.
+fn page() -> Div {
+    div().flex().flex_col().min_w(sz(420.0))
 }
 
-fn show_theme(
-    ui: &mut egui::Ui,
-    preferences: &mut PreferencesState,
-    settings: &mut Settings,
-    action: &mut Option<AppAction>,
-) {
-    ui.add_space(8.0);
-    section_title(ui, "Themes");
-    ui.label("Choose a theme for the player.");
-    ui.add_space(12.0);
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 6.0;
-        for theme_id in ThemeId::ALL {
-            if choice_row(
-                ui,
-                theme_id.label(),
-                settings.theme == theme_id,
-                "Current theme",
-            )
-            .clicked()
-                && settings.theme != theme_id
-            {
-                settings.theme = theme_id;
-                theme::apply(ui.ctx(), theme_id);
-                *action = Some(AppAction::SaveSettings);
-            }
-        }
+fn section_title(title: &'static str, colors: Palette) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .child(label(title, 15.0, colors.text).font_weight(FontWeight::BOLD))
+        .child(div().mt(sz(4.0)).mb(sz(8.0)).h(px(1.0)).bg(colors.border))
+}
+
+fn hint(text: &'static str, colors: Palette) -> Div {
+    label(text, 12.0, colors.muted)
+}
+
+fn general(app: &ViperApp, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    let path = app.settings.music_path.as_ref().map_or_else(
+        || "No music folder selected".to_owned(),
+        |path| path.display().to_string(),
+    );
+    let startup = [
+        (StartupView::Home, "Home"),
+        (StartupView::Albums, "Albums"),
+        (StartupView::Songs, "Songs"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (view, name))| {
+        choice_row(
+            ("startup", index),
+            name,
+            app.settings.startup_view == view,
+            "Current startup page",
+            colors,
+            click(cx, move |app, _, _| {
+                if app.settings.startup_view != view {
+                    app.settings.startup_view = view;
+                    app.save_settings();
+                }
+            }),
+        )
     });
-    ui.add_space(20.0);
-    section_title(ui, "App logo");
-    ui.label("Choose the cassette color way for the window and tray icon.");
-    ui.add_space(12.0);
-    if preferences.logo_thumbnails.is_empty() {
-        preferences.logo_thumbnails = LogoColorway::ALL
-            .iter()
-            .map(|colorway| {
-                ui.ctx().load_texture(
-                    colorway.label(),
-                    logo_thumbnail(*colorway),
-                    egui::TextureOptions::LINEAR,
+    page()
+        .child(section_title("Music library", colors))
+        .child("Choose the folder that contains your music.")
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(12.0))
+                .mt(sz(12.0))
+                .child(
+                    label(path, 12.0, colors.muted)
+                        .flex_1()
+                        .min_w_0()
+                        .truncate(),
                 )
-            })
+                .child(
+                    action_button(
+                        "preferences-choose-folder",
+                        "Choose folder",
+                        true,
+                        colors,
+                        click(cx, |_, _, cx| ViperApp::choose_folder(cx)),
+                    )
+                    .min_w(sz(112.0)),
+                ),
+        )
+        .child(section_title("Startup", colors).mt(sz(28.0)))
+        .child("Choose which page opens when the player starts.")
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(sz(6.0))
+                .mt(sz(12.0))
+                .children(startup),
+        )
+        .into_any_element()
+}
+
+fn theme_page(app: &mut ViperApp, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    let themes = ThemeId::ALL.into_iter().enumerate().map(|(index, theme)| {
+        choice_row(
+            ("theme", index),
+            theme.label(),
+            app.settings.theme == theme,
+            "Current theme",
+            colors,
+            click(cx, move |app, _, _| {
+                if app.settings.theme != theme {
+                    app.settings.theme = theme;
+                    app.save_settings();
+                }
+            }),
+        )
+    });
+    let themes = themes.collect::<Vec<_>>();
+    let thumbnails = &mut app.preferences.logo_thumbnails;
+    if thumbnails.is_empty() {
+        *thumbnails = LogoColorway::ALL
+            .iter()
+            .map(|colorway| render_image(colorway.decode().thumbnail(176, 176)))
             .collect();
     }
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-        for (colorway, texture) in LogoColorway::ALL
-            .into_iter()
-            .zip(&preferences.logo_thumbnails)
-        {
-            let selected = settings.logo == colorway;
-            let image = egui::load::SizedTexture::new(texture.id(), [88.0, 88.0]);
-            if ui
-                .add(egui::Button::image(image).selected(selected))
-                .on_hover_text(colorway.label())
-                .clicked()
-                && !selected
-            {
-                settings.logo = colorway;
-                *action = Some(AppAction::SaveSettings);
-            }
-        }
-    });
+    let logos = LogoColorway::ALL
+        .into_iter()
+        .zip(app.preferences.logo_thumbnails.iter().cloned())
+        .enumerate()
+        .map(|(index, (colorway, thumbnail))| {
+            let selected = app.settings.logo == colorway;
+            div()
+                .id(("logo", index))
+                .role(Role::RadioButton)
+                .aria_label(colorway.label())
+                .p(sz(4.0))
+                .rounded(sz(6.0))
+                .border_1()
+                .cursor_pointer()
+                .tooltip(tooltip(colorway.label()))
+                .when(selected, |logo| {
+                    logo.bg(colors.selected).border_color(colors.accent)
+                })
+                .when(!selected, |logo| {
+                    logo.border_color(colors.border)
+                        .hover(|style| style.bg(colors.hover))
+                })
+                .child(img(thumbnail).size(sz(88.0)))
+                .on_click(click(cx, move |app, _, _| {
+                    if app.settings.logo != colorway {
+                        app.settings.logo = colorway;
+                        app.save_settings();
+                    }
+                }))
+        });
+    page()
+        .child(section_title("Themes", colors))
+        .child("Choose a theme for the player.")
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(sz(6.0))
+                .mt(sz(12.0))
+                .children(themes),
+        )
+        .child(section_title("App logo", colors).mt(sz(20.0)))
+        .child("Choose the cassette color way for the window and tray icon.")
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(sz(10.0))
+                .mt(sz(12.0))
+                .children(logos),
+        )
+        .into_any_element()
 }
 
-/// Decode a color way into the preview image shown in the logo picker.
-///
-/// # Arguments
-/// * `colorway` - Color way to preview.
-fn logo_thumbnail(colorway: LogoColorway) -> egui::ColorImage {
-    let rgba = colorway.decode().thumbnail(176, 176).into_rgba8();
-    egui::ColorImage::from_rgba_unmultiplied(
-        [rgba.width() as usize, rgba.height() as usize],
-        rgba.as_raw(),
+fn audio(app: &ViperApp, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    page()
+        .child(section_title("Playback", colors))
+        .child("Choose how tracks transition during album playback.")
+        .child(
+            div().mt(sz(10.0)).child(
+                checkbox(
+                    "gapless-playback",
+                    "Gapless playback",
+                    app.settings.gapless_playback,
+                    true,
+                    cx,
+                    |settings, checked| settings.gapless_playback = checked,
+                )
+                .tooltip("Queue the next track before the current track ends."),
+            ),
+        )
+        .into_any_element()
+}
+
+/// A row choosing one of several options, with a radio mark and a status while chosen.
+fn choice_row(
+    id: impl Into<gpui::ElementId>,
+    text: &'static str,
+    selected: bool,
+    status: &'static str,
+    colors: Palette,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::RadioButton)
+        .aria_label(text)
+        .flex()
+        .items_center()
+        .gap(sz(10.0))
+        .h(sz(44.0))
+        .px(sz(10.0))
+        .rounded(sz(7.0))
+        .border_1()
+        .border_color(colors.border)
+        .cursor_pointer()
+        .bg(if selected {
+            colors.selected
+        } else {
+            colors.surface
+        })
+        .hover(|style| style.bg(colors.hover))
+        .child(icon(
+            if selected {
+                IconName::CircleDot
+            } else {
+                IconName::Circle
+            },
+            16.0,
+            if selected {
+                colors.accent
+            } else {
+                colors.subtle
+            },
+        ))
+        .child(label(text, 13.0, colors.text).flex_1().min_w_0().truncate())
+        .when(selected, |row| {
+            row.child(label(status, 11.0, colors.muted).flex_none())
+        })
+        .on_click(on_click)
+}
+
+/// A checkbox that edits one setting and saves the settings.
+fn checkbox(
+    id: impl Into<gpui::ElementId>,
+    text: &'static str,
+    checked: bool,
+    enabled: bool,
+    cx: &Context<ViperApp>,
+    set: impl Fn(&mut Settings, bool) + 'static,
+) -> Checkbox {
+    Checkbox::new(id)
+        .label(text)
+        .checked(checked)
+        .disabled(!enabled)
+        .on_click(listen(cx, move |app, checked: &bool, _, _| {
+            set(&mut app.settings, *checked);
+            app.save_settings();
+        }))
+}
+
+fn view(app: &ViperApp, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    let settings = &app.settings;
+    let pages = Page::ALL.into_iter().enumerate().map(|(index, page)| {
+        let shown = !settings.hidden_pages.contains(&page);
+        let enabled = !shown || settings.can_hide_page(page);
+        let checkbox = checkbox(
+            ("show-page", index),
+            page.label(),
+            shown,
+            enabled,
+            cx,
+            move |settings, shown| {
+                if shown {
+                    settings.hidden_pages.remove(&page);
+                } else {
+                    settings.hidden_pages.insert(page);
+                }
+            },
+        );
+        if enabled {
+            checkbox
+        } else {
+            checkbox.tooltip("The sidebar keeps at least one page")
+        }
+    });
+    page()
+        .child(section_title("Sidebar", colors))
+        .child(checkbox(
+            "compact-sidebar",
+            "Compact sidebar",
+            settings.compact_sidebar,
+            true,
+            cx,
+            |settings, checked| settings.compact_sidebar = checked,
+        ))
+        .child(hint(
+            "Show only icons in a narrow sidebar. Hover over an icon to see its name.",
+            colors,
+        ))
+        .child(div().mt(sz(12.0)).mb(sz(4.0)).child("Pages in the sidebar"))
+        .child(div().flex().flex_col().gap(sz(4.0)).children(pages))
+        .child(hint(
+            "Hidden pages stay in the View menu. You can also right-click a page in the sidebar to hide it.",
+            colors,
+        ))
+        .child(section_title("Interface scale", colors).mt(sz(20.0)))
+        .child(zoom_slider(app, colors, cx))
+        .child(hint(
+            "You can also press Ctrl + and Ctrl − to zoom, and Ctrl 0 to reset.",
+            colors,
+        ))
+        .child(section_title("Albums", colors).mt(sz(20.0)))
+        .child(checkbox(
+            "album-format-badges",
+            "Show album format badges",
+            settings.album_format_badges,
+            true,
+            cx,
+            |settings, checked| settings.album_format_badges = checked,
+        ))
+        .child(hint("Show the audio file format on album artwork.", colors))
+        .into_any_element()
+}
+
+/// The interface scale slider, from 75% to 200%.
+fn zoom_slider(app: &ViperApp, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    let zoom = app.settings.ui_zoom;
+    let fraction = ((zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)).clamp(0.0, 1.0);
+    let bounds = std::rc::Rc::clone(&app.ui.zoom_bounds);
+    let slider = div()
+        .id("interface-scale")
+        .role(Role::Slider)
+        .aria_label("Interface scale")
+        .relative()
+        .flex()
+        .items_center()
+        .w(sz(240.0))
+        .h(sz(24.0))
+        .cursor_pointer()
+        .child(measure(&app.ui.zoom_bounds))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(4.0))
+                .rounded(px(2.0))
+                .bg(colors.surface)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(fraction))
+                        .rounded(px(2.0))
+                        .bg(colors.accent),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(-5.0))
+                        .left(relative(fraction))
+                        .ml(px(-7.0))
+                        .size(px(14.0))
+                        .rounded_full()
+                        .bg(colors.text),
+                ),
+        )
+        .on_click(listen(cx, move |app, event: &ClickEvent, _, _| {
+            set_zoom(app, horizontal_fraction(bounds.get(), event.position()));
+            app.save_settings();
+        }))
+        .on_drag(ZoomDrag, |_, _, _, cx| cx.new(|_| DragPreview(None)))
+        .on_drag_move(listen(cx, |app, event: &DragMoveEvent<ZoomDrag>, _, _| {
+            set_zoom(app, horizontal_fraction(event.bounds, event.event.position));
+            app.ui.zoom_dragging = true;
+        }));
+    div()
+        .flex()
+        .items_center()
+        .gap(sz(12.0))
+        .mb(sz(4.0))
+        .child(slider)
+        .child(label(format!("{:.0}%", zoom * 100.0), 13.0, colors.text))
+        .into_any_element()
+}
+
+fn set_zoom(app: &mut ViperApp, fraction: f32) {
+    let zoom = MIN_ZOOM + fraction * (MAX_ZOOM - MIN_ZOOM);
+    app.settings.ui_zoom = ((zoom / ZOOM_STEP).round() * ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+}
+
+/// A text field editing one of the dialog's drafts.
+fn draft_field(
+    app: &mut ViperApp,
+    key: &'static str,
+    placeholder: &'static str,
+    masked: bool,
+    draft: fn(&mut PreferencesState) -> &mut String,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> Input {
+    let value = draft(&mut app.preferences).clone();
+    text_field(
+        app,
+        format!("{FIELD_PREFIX}{key}"),
+        &value,
+        FieldOptions {
+            placeholder,
+            masked,
+        },
+        window,
+        cx,
+        move |app, text| text.clone_into(draft(&mut app.preferences)),
     )
 }
 
-fn show_audio(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
-    ui.set_min_width(420.0);
-    ui.add_space(8.0);
-    section_title(ui, "Playback");
-    ui.label("Choose how tracks transition during album playback.");
-    ui.add_space(10.0);
-    if ui
-        .checkbox(&mut settings.gapless_playback, "Gapless playback")
-        .on_hover_text("Queue the next track before the current track ends.")
-        .changed()
-    {
-        *action = Some(AppAction::SaveSettings);
-    }
-}
-
-fn choice_row(ui: &mut egui::Ui, label: &str, selected: bool, status: &str) -> egui::Response {
-    let colors = theme::colors(ui.ctx());
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::RadioButton,
-            ui.is_enabled(),
-            selected,
-            label,
-        )
-    });
-    let fill = if response.hovered() {
-        colors.hover
-    } else if selected {
-        colors.selected
-    } else {
-        colors.surface
-    };
-    ui.painter().rect(
-        rect,
-        7.0,
-        fill,
-        egui::Stroke::new(1.0_f32, colors.border),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + 18.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        if selected {
-            egui_phosphor::regular::RADIO_BUTTON
-        } else {
-            egui_phosphor::regular::CIRCLE
-        },
-        theme::icon_font(16.0),
-        if selected {
-            colors.accent
-        } else {
-            colors.subtle
-        },
-    );
-    // Reserve status space only when there is room; long names are clipped to the row.
-    let show_status = selected && rect.width() >= 390.0;
-    let label_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 36.0, rect.top()),
-        egui::pos2(
-            rect.right() - if show_status { 150.0 } else { 12.0 },
-            rect.bottom(),
-        ),
-    );
-    ui.painter().with_clip_rect(label_rect).text(
-        egui::pos2(label_rect.left(), rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        colors.text,
-    );
-    if show_status {
-        ui.painter().text(
-            egui::pos2(rect.right() - 12.0, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            status,
-            egui::FontId::proportional(11.0),
-            colors.muted,
-        );
-    }
-    response
-}
-
-fn show_view(ui: &mut egui::Ui, settings: &mut Settings, action: &mut Option<AppAction>) {
-    let colors = theme::colors(ui.ctx());
-    ui.add_space(8.0);
-    section_title(ui, "Sidebar");
-    if ui
-        .checkbox(&mut settings.compact_sidebar, "Compact sidebar")
-        .changed()
-    {
-        *action = Some(AppAction::SaveSettings);
-    }
-    ui.label(
-        egui::RichText::new(
-            "Show only icons in a narrow sidebar. Hover over an icon to see its name.",
-        )
-        .size(12.0)
-        .color(colors.muted),
-    );
-    ui.add_space(12.0);
-    ui.label(egui::RichText::new("Pages in the sidebar").color(colors.text));
-    for page in Page::ALL {
-        let mut shown = !settings.hidden_pages.contains(&page);
-        if ui
-            .add_enabled(
-                !shown || settings.can_hide_page(page),
-                egui::Checkbox::new(&mut shown, page.label()),
-            )
-            .on_disabled_hover_text("The sidebar keeps at least one page")
-            .changed()
-        {
-            if shown {
-                settings.hidden_pages.remove(&page);
-            } else {
-                settings.hidden_pages.insert(page);
-            }
-            *action = Some(AppAction::SaveSettings);
-        }
-    }
-    ui.label(
-        egui::RichText::new(
-            "Hidden pages stay in the View menu. You can also right-click a page in the sidebar to hide it.",
-        )
-        .size(12.0)
-        .color(colors.muted),
-    );
-    ui.add_space(20.0);
-    section_title(ui, "Interface scale");
-    let mut zoom = ui.ctx().zoom_factor();
-    if ui
-        .add(
-            egui::Slider::new(&mut zoom, 0.75..=2.0)
-                .step_by(0.05)
-                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-        )
-        .changed()
-    {
-        ui.ctx().set_zoom_factor(zoom);
-    }
-    ui.label(
-        egui::RichText::new("You can also press Ctrl + and Ctrl − to zoom, and Ctrl 0 to reset.")
-            .size(12.0)
-            .color(colors.muted),
-    );
-    ui.add_space(20.0);
-    section_title(ui, "Albums");
-    if ui
-        .checkbox(
-            &mut settings.album_format_badges,
-            "Show album format badges",
-        )
-        .changed()
-    {
-        *action = Some(AppAction::SaveSettings);
-    }
-    ui.label(
-        egui::RichText::new("Show the audio file format on album artwork.")
-            .size(12.0)
-            .color(colors.muted),
-    );
-}
-
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-fn show_connections(
-    ui: &mut egui::Ui,
-    preferences: &mut PreferencesState,
-    settings: &mut Settings,
-    library: &LibraryFeature,
-    action: &mut Option<AppAction>,
-) {
-    ui.set_min_width(420.0);
-    ui.add_space(8.0);
+fn connections(
+    app: &mut ViperApp,
+    colors: Palette,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let page = page();
     #[cfg(target_os = "linux")]
-    {
-        section_title(ui, "Samba / SMB share");
-        let is_smb = settings
+    let page = {
+        use std::sync::atomic::Ordering;
+        let library = &app.library;
+        let is_smb = app
+            .settings
             .music_path
             .as_deref()
             .is_some_and(crate::features::library::is_smb_path);
         let status = if library.scanning && is_smb {
-            let completed = library
-                .progress
-                .completed
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let total = library
-                .progress
-                .total
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let completed = library.progress.completed.load(Ordering::Relaxed);
+            let total = library.progress.total.load(Ordering::Relaxed);
             if total == 0 {
                 "Scanning share…".to_owned()
             } else {
@@ -542,236 +646,312 @@ fn show_connections(
         } else {
             "No SMB share configured".to_owned()
         };
-        ui.label(format!("Status: {status}"));
-        ui.add_space(8.0);
-        ui.label(
-            "Connect directly to a network share. Share details are stored in SQLite, and the password is saved in the operating system's credential store.",
-        );
-        ui.add_space(10.0);
-        ui.label("Share folder URL");
-        connection_text_edit(
-            ui,
-            &mut preferences.smb_url_draft,
+        let url = draft_field(
+            app,
+            "smb-url",
             "smb://server/Music/Albums",
             false,
+            |p| &mut p.smb_url_draft,
+            window,
+            cx,
         );
-        ui.add_space(8.0);
-        ui.columns(2, |columns| {
-            columns[0].vertical(|ui| {
-                ui.label("Username");
-                connection_text_edit(ui, &mut preferences.smb_username, "Optional", false);
-            });
-            columns[1].vertical(|ui| {
-                ui.label("Workgroup");
-                connection_text_edit(ui, &mut preferences.smb_workgroup, "Optional", false);
-            });
-        });
-        ui.add_space(8.0);
-        ui.label("Password");
-        connection_text_edit(ui, &mut preferences.smb_password, "Optional", true);
-        ui.add_space(8.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 38.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                if action_button(ui, "Connect and scan", true).clicked() {
-                    *action = Some(AppAction::ConnectSmbShare);
-                }
-            },
+        let username = draft_field(
+            app,
+            "smb-username",
+            "Optional",
+            false,
+            |p| &mut p.smb_username,
+            window,
+            cx,
         );
-        ui.add_space(28.0);
-    }
+        let workgroup = draft_field(
+            app,
+            "smb-workgroup",
+            "Optional",
+            false,
+            |p| &mut p.smb_workgroup,
+            window,
+            cx,
+        );
+        let password = draft_field(
+            app,
+            "smb-password",
+            "Optional",
+            true,
+            |p| &mut p.smb_password,
+            window,
+            cx,
+        );
+        let field = |name: &'static str, input: Input| {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap(sz(4.0))
+                .child(name)
+                .child(input)
+        };
+        page.child(section_title("Samba / SMB share", colors))
+            .child(format!("Status: {status}"))
+            .child(div().mt(sz(8.0)).mb(sz(10.0)).child(
+                "Connect directly to a network share. Share details are stored in SQLite, and the password is saved in the operating system's credential store.",
+            ))
+            .child(field("Share folder URL", url))
+            .child(
+                div()
+                    .flex()
+                    .gap(sz(12.0))
+                    .mt(sz(8.0))
+                    .child(field("Username", username))
+                    .child(field("Workgroup", workgroup)),
+            )
+            .child(div().mt(sz(8.0)).child(field("Password", password)))
+            .child(
+                div().flex().justify_end().mt(sz(8.0)).child(action_button(
+                    "preferences-connect-smb",
+                    "Connect and scan",
+                    true,
+                    colors,
+                    click(cx, |app, _, _| app.handle_action(AppAction::ConnectSmbShare)),
+                )),
+            )
+    };
+    page.into_any_element()
 }
 
-fn show_services(
-    ui: &mut egui::Ui,
-    preferences: &mut PreferencesState,
-    settings: &mut Settings,
-    lastfm_service: &LastFmService,
-    lastfm_settings: &LastFmSettings,
-    action: &mut Option<AppAction>,
-) {
-    let lastfm_status = lastfm_service.status();
-    let colors = theme::colors(ui.ctx());
-    ui.set_min_width(420.0);
-    ui.add_space(8.0);
-    section_title(ui, "Last.fm scrobbling");
-    ui.label("Send currently playing tracks and scrobbles to your Last.fm account.");
-    ui.add_space(8.0);
-    if ui
-        .checkbox(
-            &mut settings.lastfm_scrobbling_enabled,
-            "Enable Last.fm scrobbling",
-        )
-        .changed()
-    {
-        *action = Some(AppAction::SaveSettings);
-    }
-    let status = match lastfm_settings.username.as_deref() {
-        Some(username) if lastfm_status == "Not connected" => {
-            format!("Connected as {username}")
-        }
+fn services(
+    app: &mut ViperApp,
+    colors: Palette,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let lastfm_status = app.lastfm_service.status();
+    let status = match app.lastfm_settings.username.as_deref() {
+        Some(username) if lastfm_status == "Not connected" => format!("Connected as {username}"),
         Some(username) => format!("Connected as {username} · {lastfm_status}"),
         None => lastfm_status.to_owned(),
     };
-    ui.label(egui::RichText::new(status).size(11.0).color(colors.muted));
-    ui.add_space(12.0);
-    ui.label("Last.fm API key");
-    connection_text_edit(
-        ui,
-        &mut preferences.lastfm_api_key_draft,
+    let can_finish = app.lastfm_service.can_finish_auth();
+    let connected = app.lastfm_settings.session_key.is_some();
+    let api_key = draft_field(
+        app,
+        "lastfm-key",
         "Enter your API key",
         false,
+        |p| &mut p.lastfm_api_key_draft,
+        window,
+        cx,
     );
-    ui.add_space(8.0);
-    ui.label("Last.fm shared secret");
-    connection_text_edit(
-        ui,
-        &mut preferences.lastfm_api_secret_draft,
+    let api_secret = draft_field(
+        app,
+        "lastfm-secret",
         "Enter your API shared secret",
         true,
+        |p| &mut p.lastfm_api_secret_draft,
+        window,
+        cx,
     );
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new("Create an API account at last.fm/api/account/create. Credentials and the session key are stored locally.")
-            .size(11.0)
-            .color(colors.muted),
-    );
-    ui.add_space(12.0);
-    ui.horizontal_wrapped(|ui| {
-        if action_button(ui, "Save API credentials", true).clicked() {
-            *action = Some(AppAction::SaveLastFmSettings);
-        }
-        if action_button(ui, "Connect Last.fm", true).clicked() {
-            *action = Some(AppAction::StartLastFmAuth);
-        }
-        if lastfm_service.can_finish_auth() && action_button(ui, "Finish sign-in", true).clicked() {
-            *action = Some(AppAction::FinishLastFmAuth);
-        }
-        if lastfm_settings.session_key.is_some() && action_button(ui, "Disconnect", true).clicked()
-        {
-            *action = Some(AppAction::DisconnectLastFm);
-        }
-    });
-
-    ui.add_space(28.0);
-    section_title(ui, "Discord Rich Presence");
-    ui.label("Show the currently playing song as a rich presence on your Discord profile.");
-    if !discord::available() {
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new("This build doesn't include Discord Rich Presence.")
-                .size(11.0)
-                .color(colors.muted),
-        );
+    let button = |id: &'static str, text: &'static str, action: fn() -> AppAction| {
+        action_button(
+            id,
+            text,
+            true,
+            colors,
+            click(cx, move |app, _, _| app.handle_action(action())),
+        )
+    };
+    let mut buttons = vec![
+        button("lastfm-save", "Save API credentials", || {
+            AppAction::SaveLastFmSettings
+        }),
+        button("lastfm-connect", "Connect Last.fm", || {
+            AppAction::StartLastFmAuth
+        }),
+    ];
+    if can_finish {
+        buttons.push(button("lastfm-finish", "Finish sign-in", || {
+            AppAction::FinishLastFmAuth
+        }));
     }
-    ui.add_enabled_ui(discord::available(), |ui| {
-        ui.spacing_mut().item_spacing.x += 6.0;
-        if ui
-            .checkbox(
-                &mut settings.discord_rich_presence_enabled,
-                "Show currently playing song as Discord status",
-            )
-            .changed()
-        {
-            *action = Some(AppAction::SaveSettings);
-        }
-    });
-    ui.add_space(14.0);
-    let mut options = settings.discord_presence;
-    ui.add_enabled_ui(
-        discord::available() && settings.discord_rich_presence_enabled,
-        |ui| {
-            ui.label("Show on Discord as “Listening to …”");
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
-                for (status, label) in [
-                    (PresenceStatus::Song, "The song title"),
-                    (PresenceStatus::Artist, "The artist and album"),
-                    (PresenceStatus::App, "Viper Music"),
-                ] {
-                    if choice_row(ui, label, options.status == status, "Shown on your profile")
-                        .clicked()
-                    {
-                        options.status = status;
-                    }
+    if connected {
+        buttons.push(button("lastfm-disconnect", "Disconnect", || {
+            AppAction::DisconnectLastFm
+        }));
+    }
+    let settings = &app.settings;
+    let available = discord::available();
+    let presence_enabled = available && settings.discord_rich_presence_enabled;
+    let options = settings.discord_presence;
+    let statuses = [
+        (PresenceStatus::Song, "The song title"),
+        (PresenceStatus::Artist, "The artist and album"),
+        (PresenceStatus::App, "Viper Music"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (status, text))| {
+        let row = choice_row(
+            ("presence-status", index),
+            text,
+            options.status == status,
+            "Shown on your profile",
+            colors,
+            click(cx, move |app, _, _| {
+                if app.settings.discord_presence.status != status {
+                    app.settings.discord_presence.status = status;
+                    app.save_settings();
                 }
-            });
-            ui.add_space(12.0);
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.x += 6.0;
-                ui.checkbox(&mut options.show_artist, "Show the artist");
-                ui.checkbox(&mut options.show_album, "Show the album");
-                ui.checkbox(&mut options.show_progress, "Show the time left in the song");
-                ui.checkbox(
-                    &mut options.show_when_paused,
+            }),
+        );
+        div()
+            .when(!presence_enabled, |row| row.opacity(0.5).occlude())
+            .child(row)
+    });
+    let presence_option =
+        |id: &'static str, text: &'static str, checked: bool, set: fn(&mut Settings, bool)| {
+            checkbox(id, text, checked, presence_enabled, cx, set)
+        };
+    page()
+        .child(section_title("Last.fm scrobbling", colors))
+        .child("Send currently playing tracks and scrobbles to your Last.fm account.")
+        .child(div().mt(sz(8.0)).child(checkbox(
+            "lastfm-scrobbling",
+            "Enable Last.fm scrobbling",
+            settings.lastfm_scrobbling_enabled,
+            true,
+            cx,
+            |settings, checked| settings.lastfm_scrobbling_enabled = checked,
+        )))
+        .child(label(status, 11.0, colors.muted).mt(sz(4.0)).mb(sz(12.0)))
+        .child("Last.fm API key")
+        .child(div().mt(sz(4.0)).mb(sz(8.0)).child(api_key))
+        .child("Last.fm shared secret")
+        .child(div().mt(sz(4.0)).child(api_secret))
+        .child(
+            label(
+                "Create an API account at last.fm/api/account/create. Credentials and the session key are stored locally.",
+                11.0,
+                colors.muted,
+            )
+            .mt(sz(6.0))
+            .mb(sz(12.0)),
+        )
+        .child(div().flex().flex_wrap().gap(sz(8.0)).children(buttons))
+        .child(section_title("Discord Rich Presence", colors).mt(sz(28.0)))
+        .child("Show the currently playing song as a rich presence on your Discord profile.")
+        .when(!available, |page| {
+            page.child(
+                label("This build doesn't include Discord Rich Presence.", 11.0, colors.muted)
+                    .mt(sz(6.0)),
+            )
+        })
+        .child(div().mt(sz(6.0)).child(checkbox(
+            "discord-presence",
+            "Show currently playing song as Discord status",
+            settings.discord_rich_presence_enabled,
+            available,
+            cx,
+            |settings, checked| settings.discord_rich_presence_enabled = checked,
+        )))
+        .child(
+            div()
+                .mt(sz(14.0))
+                .mb(sz(8.0))
+                .when(!presence_enabled, |text| text.text_color(colors.muted))
+                .child("Show on Discord as “Listening to …”"),
+        )
+        .child(div().flex().flex_col().gap(sz(6.0)).children(statuses))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(sz(4.0))
+                .mt(sz(12.0))
+                .child(presence_option("discord-artist", "Show the artist", options.show_artist, |settings, checked| {
+                    settings.discord_presence.show_artist = checked;
+                }))
+                .child(presence_option("discord-album", "Show the album", options.show_album, |settings, checked| {
+                    settings.discord_presence.show_album = checked;
+                }))
+                .child(presence_option(
+                    "discord-progress",
+                    "Show the time left in the song",
+                    options.show_progress,
+                    |settings, checked| settings.discord_presence.show_progress = checked,
+                ))
+                .child(presence_option(
+                    "discord-paused",
                     "Keep showing the song while paused",
-                );
-            });
-        },
-    );
-    if options != settings.discord_presence {
-        settings.discord_presence = options;
-        *action = Some(AppAction::SaveSettings);
-    }
+                    options.show_when_paused,
+                    |settings, checked| settings.discord_presence.show_when_paused = checked,
+                )),
+        )
+        .into_any_element()
 }
 
-fn show_about(ui: &mut egui::Ui, update_state: &UpdateState, action: &mut Option<AppAction>) {
-    let colors = theme::colors(ui.ctx());
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(egui_phosphor::regular::DISC)
-                .font(theme::icon_font(40.0))
-                .color(colors.accent),
-        );
-        ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new("Viper Music")
-                    .size(20.0)
-                    .strong()
-                    .color(colors.text),
-            );
-            ui.label(
-                egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                    .size(12.0)
-                    .color(colors.muted),
-            );
-        });
-    });
-    ui.add_space(12.0);
-    ui.label("A fast, album-centric music player for local folders and SMB shares.");
-    ui.add_space(20.0);
-    section_title(ui, "Updates");
-    show_updates(ui, update_state, action);
-    ui.add_space(20.0);
-    section_title(ui, "Data");
-    match Settings::file_path() {
+fn about(app: &ViperApp, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
+    let data = match Settings::file_path() {
         Ok(path) => {
             let path = path.display().to_string();
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&path).monospace().size(12.0)).truncate(),
-                );
-                if ui
-                    .small_button(egui_phosphor::regular::COPY)
-                    .on_hover_text("Copy path")
-                    .clicked()
-                {
-                    ui.ctx().copy_text(path);
-                }
-            });
+            let copied = path.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(6.0))
+                .child(
+                    label(path, 12.0, colors.text)
+                        .font_family("monospace")
+                        .min_w_0()
+                        .truncate(),
+                )
+                .child(icon_button(
+                    "copy-settings-path",
+                    IconName::Copy,
+                    "Copy path",
+                    colors,
+                    click(cx, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                    }),
+                ))
         }
-        Err(error) => {
-            ui.label(egui::RichText::new(error.to_string()).color(colors.danger));
-        }
-    }
+        Err(error) => label(error.to_string(), 13.0, colors.danger),
+    };
+    page()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(sz(10.0))
+                .child(icon(IconName::Disc, 40.0, colors.accent))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            label("Viper Music", 20.0, colors.text).font_weight(FontWeight::BOLD),
+                        )
+                        .child(label(
+                            format!("Version {}", env!("CARGO_PKG_VERSION")),
+                            12.0,
+                            colors.muted,
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .mt(sz(12.0))
+                .mb(sz(20.0))
+                .child("A fast, album-centric music player for local folders and SMB shares."),
+        )
+        .child(section_title("Updates", colors))
+        .child(updates(&app.preferences.update_state, colors, cx))
+        .child(section_title("Data", colors).mt(sz(20.0)))
+        .child(data)
+        .into_any_element()
 }
 
 /// Where updating stands, and the button that moves it on.
-fn show_updates(ui: &mut egui::Ui, state: &UpdateState, action: &mut Option<AppAction>) {
-    let colors = theme::colors(ui.ctx());
+fn updates(state: &UpdateState, colors: Palette, cx: &Context<ViperApp>) -> AnyElement {
     let (text, failed) = match state {
         UpdateState::Idle => ("Not checked yet".to_owned(), false),
         UpdateState::UpToDate => ("Up to date".to_owned(), false),
@@ -786,50 +966,64 @@ fn show_updates(ui: &mut egui::Ui, state: &UpdateState, action: &mut Option<AppA
                 || format!("{:.1} MB", *downloaded as f64 / f64::from(1 << 20)),
                 |total| format!("{}%", downloaded * 100 / total.max(1)),
             );
-            (format!("Downloading Viper Music {version} · {progress}"), false)
+            (
+                format!("Downloading Viper Music {version} · {progress}"),
+                false,
+            )
         }
-        UpdateState::Ready { version } => {
-            (format!("Viper Music {version} is installed. Restart to use it."), false)
-        }
+        UpdateState::Ready { version } => (
+            format!("Viper Music {version} is installed. Restart to use it."),
+            false,
+        ),
         UpdateState::Failed { message } => (message.clone(), true),
     };
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(text)
-                .size(12.0)
-                .color(if failed { colors.danger } else { colors.muted }),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match state {
-            UpdateState::Ready { .. } => {
-                if action_button(ui, "Restart to update", true).clicked() {
-                    *action = Some(AppAction::RestartToUpdate);
-                }
-            }
-            UpdateState::Available { .. } => {
-                if action_button(ui, "Download", true).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(RELEASES_URL));
-                }
-            }
-            UpdateState::Checking | UpdateState::Downloading { .. } => {
-                action_button(ui, "Check for updates", false);
-            }
-            UpdateState::Idle | UpdateState::UpToDate | UpdateState::Failed { .. } => {
-                if action_button(ui, "Check for updates", true).clicked() {
-                    *action = Some(AppAction::CheckForUpdates);
-                }
-            }
-        });
-    });
-}
-
-fn section_title(ui: &mut egui::Ui, title: &str) {
-    ui.label(
-        eframe::egui::RichText::new(title)
-            .size(15.0)
-            .strong()
-            .color(ui.visuals().widgets.active.text_color()),
-    );
-    ui.add_space(4.0);
-    ui.separator();
-    ui.add_space(8.0);
+    let button = match state {
+        UpdateState::Ready { .. } => action_button(
+            "restart-to-update",
+            "Restart to update",
+            true,
+            colors,
+            click(cx, |app, _, _| {
+                app.handle_action(AppAction::RestartToUpdate)
+            }),
+        ),
+        UpdateState::Available { .. } => action_button(
+            "download-update",
+            "Download",
+            true,
+            colors,
+            click(cx, |_, _, cx| cx.open_url(RELEASES_URL)),
+        ),
+        UpdateState::Checking | UpdateState::Downloading { .. } => action_button(
+            "check-for-updates",
+            "Check for updates",
+            false,
+            colors,
+            |_, _, _| {},
+        ),
+        UpdateState::Idle | UpdateState::UpToDate | UpdateState::Failed { .. } => action_button(
+            "check-for-updates",
+            "Check for updates",
+            true,
+            colors,
+            click(cx, |app, _, _| {
+                app.handle_action(AppAction::CheckForUpdates)
+            }),
+        ),
+    };
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(sz(12.0))
+        .child(
+            label(
+                text,
+                12.0,
+                if failed { colors.danger } else { colors.muted },
+            )
+            .min_w_0(),
+        )
+        .child(button)
+        .into_any_element()
 }

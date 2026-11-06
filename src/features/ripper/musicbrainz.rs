@@ -6,7 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize};
 use sha1::{Digest, Sha1};
 use std::{fmt::Write, sync::OnceLock, time::Duration};
 
-static HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+static HTTP_CLIENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 /// One release the disc belongs to, with the tracks of the disc's medium.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,36 +101,35 @@ fn toc_parameter(toc: &Toc) -> String {
     parameter
 }
 
-fn client() -> Result<reqwest::blocking::Client, String> {
-    HTTP_CLIENT
-        .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(20))
-                // MusicBrainz asks every client to name itself and a way to reach its authors.
-                .user_agent(concat!(
-                    "ViperMusic/",
-                    env!("CARGO_PKG_VERSION"),
-                    " ( https://github.com/PolarisPyra/ViperMusic )"
-                ))
-                .build()
-                .map_err(|error| format!("Could not prepare the MusicBrainz request: {error}"))
-        })
-        .clone()
+fn client() -> &'static ureq::Agent {
+    HTTP_CLIENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(20)))
+            // MusicBrainz asks every client to name itself and a way to reach its authors.
+            .user_agent(concat!(
+                "ViperMusic/",
+                env!("CARGO_PKG_VERSION"),
+                " ( https://github.com/PolarisPyra/ViperMusic )"
+            ))
+            .http_status_as_error(false)
+            .build()
+            .into()
+    })
 }
 
 /// The releases that have this disc, best match first. Empty when MusicBrainz doesn't know it.
 pub(crate) fn lookup(toc: &Toc) -> Result<Vec<Release>, String> {
     let id = disc_id(toc);
-    let response = client()?
+    let response = client()
         .get(format!("https://musicbrainz.org/ws/2/discid/{id}"))
-        .query(&[
+        .query_pairs([
             ("toc", toc_parameter(toc).as_str()),
             ("inc", "artist-credits recordings"),
             ("fmt", "json"),
         ])
-        .send()
+        .call()
         .map_err(|error| network_error("MusicBrainz", error))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    if response.status() == ureq::http::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
     let response: ReleasesResponse = read_json(response)?;
@@ -185,10 +184,10 @@ pub(crate) fn search(album: &str, artist: &str) -> Result<Vec<ReleaseMatch>, Str
     if !artist.trim().is_empty() {
         let _ = write!(query, " AND artist:{}", quoted(artist));
     }
-    let response = client()?
+    let response = client()
         .get("https://musicbrainz.org/ws/2/release")
-        .query(&[("query", query.as_str()), ("limit", "15"), ("fmt", "json")])
-        .send()
+        .query_pairs([("query", query.as_str()), ("limit", "15"), ("fmt", "json")])
+        .call()
         .map_err(|error| network_error("MusicBrainz", error))?;
     let response: ReleasesResponse = read_json(response)?;
     Ok(response
@@ -226,10 +225,10 @@ pub(crate) fn search(album: &str, artist: &str) -> Result<Vec<ReleaseMatch>, Str
 /// # Errors
 /// Returns a message for the user when MusicBrainz cannot be reached or answers with an error.
 pub(crate) fn release_media(release_id: &str) -> Result<Vec<Release>, String> {
-    let response = client()?
+    let response = client()
         .get(format!("https://musicbrainz.org/ws/2/release/{release_id}"))
-        .query(&[("inc", "artist-credits recordings"), ("fmt", "json")])
-        .send()
+        .query_pairs([("inc", "artist-credits recordings"), ("fmt", "json")])
+        .call()
         .map_err(|error| network_error("MusicBrainz", error))?;
     let release: MbRelease = read_json(response)?;
     Ok(release
@@ -285,54 +284,53 @@ fn quoted(text: &str) -> String {
     )
 }
 
-fn read_json<T: DeserializeOwned>(response: reqwest::blocking::Response) -> Result<T, String> {
+fn read_json<T: DeserializeOwned>(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<T, String> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("MusicBrainz returned an error: HTTP {status}"));
+    }
     response
-        .error_for_status()
-        .map_err(|error| format!("MusicBrainz returned an error: {}", error.without_url()))?
-        .json()
-        .map_err(|error| {
-            format!(
-                "Could not read the MusicBrainz response: {}",
-                error.without_url()
-            )
-        })
+        .body_mut()
+        .read_json()
+        .map_err(|error| format!("Could not read the MusicBrainz response: {error}"))
 }
 
 /// The release's front cover, about 500 px wide. `None` when the archive has none.
 pub(crate) fn front_cover(release_id: &str) -> Result<Option<Vec<u8>>, String> {
-    let response = client()?
+    let mut response = client()
         .get(format!(
             "https://coverartarchive.org/release/{release_id}/front-500"
         ))
-        .send()
+        .call()
         .map_err(|error| network_error("the Cover Art Archive", error))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    let status = response.status();
+    if status == ureq::http::StatusCode::NOT_FOUND {
         return Ok(None);
     }
+    if !status.is_success() {
+        return Err(format!(
+            "The Cover Art Archive returned an error: HTTP {status}"
+        ));
+    }
     let bytes = response
-        .error_for_status()
-        .map_err(|error| {
-            format!(
-                "The Cover Art Archive returned an error: {}",
-                error.without_url()
-            )
-        })?
-        .bytes()
-        .map_err(|error| format!("Could not download the cover: {}", error.without_url()))?;
-    Ok(Some(bytes.to_vec()))
+        .body_mut()
+        .read_to_vec()
+        .map_err(|error| format!("Could not download the cover: {error}"))?;
+    Ok(Some(bytes))
 }
 
 /// Why a service could not be reached, in words for the user rather than the HTTP client's.
-fn network_error(service: &str, error: reqwest::Error) -> String {
-    if error.is_timeout() {
-        format!("{service} took too long to answer. Try again in a moment.")
-    } else if error.is_connect() {
-        format!("Could not reach {service}. Check your internet connection.")
-    } else {
-        format!(
-            "Could not reach {service}: {error}",
-            error = error.without_url()
-        )
+fn network_error(service: &str, error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Timeout(_) => {
+            format!("{service} took too long to answer. Try again in a moment.")
+        }
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => {
+            format!("Could not reach {service}. Check your internet connection.")
+        }
+        error => format!("Could not reach {service}: {error}"),
     }
 }
 

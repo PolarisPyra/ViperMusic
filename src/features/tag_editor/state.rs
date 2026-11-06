@@ -1,6 +1,7 @@
 //! The album being edited: its tags as they were and as the user has changed them, and the
 //! MusicBrainz search or save running in the background.
 use super::writer::{self, TagChange};
+use crate::shared::repaint::Repaint;
 use crate::{
     features::{
         library::{read_track, state::LibraryFeature, Track},
@@ -9,7 +10,6 @@ use crate::{
     platform::persistence::settings::Settings,
     shared::ui::toasts::Toasts,
 };
-use eframe::egui;
 use lofty::tag::ItemKey;
 use rayon::prelude::*;
 use std::{
@@ -142,7 +142,7 @@ impl TagEditor {
     ///
     /// # Arguments
     /// * `ctx` - Repainted when the search finishes.
-    pub(crate) fn search(&mut self, ctx: &egui::Context) {
+    pub(crate) fn search(&mut self, ctx: &Repaint) {
         let (album, artist) = (self.album.title.clone(), self.album.artist.clone());
         self.start(spawn(ctx, "viper-tag-search", Job::Searching, move || {
             musicbrainz::search(&album, &artist)
@@ -154,7 +154,7 @@ impl TagEditor {
     /// # Arguments
     /// * `ctx` - Repainted when the release's tracks arrive.
     /// * `index` - Index into [`Self::releases`].
-    pub(crate) fn choose(&mut self, ctx: &egui::Context, index: usize) {
+    pub(crate) fn choose(&mut self, ctx: &Repaint, index: usize) {
         let Some(release) = self.releases.get(index) else {
             return;
         };
@@ -172,7 +172,7 @@ impl TagEditor {
     ///
     /// # Returns
     /// `true` when nothing changed, so there is nothing to wait for.
-    pub(crate) fn save(&mut self, ctx: &egui::Context) -> bool {
+    pub(crate) fn save(&mut self, ctx: &Repaint) -> bool {
         let year = self.album.year.trim();
         let numbers = self
             .tracks
@@ -427,7 +427,7 @@ impl TrackDraft {
 /// # Errors
 /// Returns a message for the user when the thread could not start.
 fn spawn<T: Send + 'static>(
-    ctx: &egui::Context,
+    ctx: &Repaint,
     name: &str,
     job: fn(Receiver<T>) -> Job,
     work: impl FnOnce() -> T + Send + 'static,

@@ -390,13 +390,11 @@ fn api_call(
     );
     parameters.insert("format".to_owned(), "json".to_owned());
 
-    let response: Value = reqwest::blocking::Client::new()
-        .post(API_URL)
-        .form(&parameters)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
+    let response: Value = ureq::post(API_URL)
+        .send_form(&parameters)
         .map_err(|error| format!("Last.fm request failed: {error}"))?
-        .json()
+        .body_mut()
+        .read_json()
         .map_err(|error| format!("Could not read Last.fm response: {error}"))?;
     if let Some(message) = response["message"]
         .as_str()

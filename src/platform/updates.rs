@@ -4,8 +4,8 @@
 //! update card and Preferences offer a restart. A copy that is not a release AppImage (a dev or
 //! source build) cannot replace itself, so it only reports the version.
 
+use crate::shared::repaint::Repaint;
 use anyhow::{ensure, Context};
-use eframe::egui;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -16,7 +16,7 @@ use std::{
         Arc, Mutex, OnceLock, PoisonError,
     },
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// Release page opened by Download, for copies that cannot install updates.
@@ -32,8 +32,8 @@ const TICK: Duration = Duration::from_secs(5 * 60);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// A download that has not finished by then has stalled; the next check starts it again.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// How long the update card takes to fade and slide in, in seconds.
-const CARD_ENTER_SECS: f64 = 0.35;
+/// How long the update card takes to fade and slide in.
+const CARD_ENTER: Duration = Duration::from_millis(350);
 /// How far above its place the update card starts, in points.
 const CARD_ENTER_OFFSET: f32 = 10.0;
 
@@ -78,8 +78,8 @@ struct Shared {
     /// One check or download at a time.
     busy: AtomicBool,
     last_check: Mutex<Option<SystemTime>>,
-    /// Wakes the window when the state changes; set by the first frame.
-    ctx: OnceLock<egui::Context>,
+    /// Wakes the app when the state changes; set by [`Updater::start`].
+    repaint: OnceLock<Repaint>,
 }
 
 /// Checks for and installs updates on background threads; the UI reads its state each frame.
@@ -88,8 +88,8 @@ pub(crate) struct Updater {
     shared: Arc<Shared>,
     /// Version whose card the user closed this session.
     dismissed: Option<String>,
-    /// Context time when the card appeared, for its entrance; `None` while it is hidden.
-    card_shown_at: Option<f64>,
+    /// When the card appeared, for its entrance; `None` while it is hidden.
+    card_shown_at: Option<Instant>,
 }
 
 #[derive(serde::Deserialize)]
@@ -119,10 +119,14 @@ fn installed_appimage() -> Option<PathBuf> {
 impl Updater {
     /// Start the background checks.
     ///
+    /// # Arguments
+    /// * `repaint` - Wakes the app when the state changes.
+    ///
     /// # Returns
     /// The updater whose state the UI shows.
-    pub(crate) fn start() -> Self {
+    pub(crate) fn start(repaint: Repaint) -> Self {
         let updater = Self::default();
+        let _ = updater.shared.repaint.set(repaint);
         let shared = Arc::clone(&updater.shared);
         let spawned = thread::Builder::new()
             .name("updates".to_owned())
@@ -143,13 +147,9 @@ impl Updater {
 
     /// Where updating stands now.
     ///
-    /// # Arguments
-    /// * `ctx` - egui context, kept so background progress can repaint the window.
-    ///
     /// # Returns
     /// The current state.
-    pub(crate) fn state(&self, ctx: &egui::Context) -> UpdateState {
-        let _ = self.shared.ctx.set(ctx.clone());
+    pub(crate) fn state(&self) -> UpdateState {
         self.shared.state().unwrap_or(UpdateState::Idle)
     }
 
@@ -179,91 +179,102 @@ impl Updater {
             true
         })
     }
+}
 
-    /// Draw the card in the top right once an update is installed, or, for a copy that cannot
-    /// install it, released.
-    ///
-    /// # Arguments
-    /// * `ctx` - egui context for the frame.
-    ///
-    /// # Returns
-    /// The action the user picked on the card, if any.
-    pub(crate) fn show_card(&mut self, ctx: &egui::Context) -> Option<UpdateAction> {
-        let (version, action) = match self.state(ctx) {
-            UpdateState::Ready { version } => (version, UpdateAction::Restart),
-            UpdateState::Available { version } => (version, UpdateAction::Download),
-            _ => {
-                self.card_shown_at = None;
-                return None;
-            }
-        };
-        if self.dismissed.as_deref() == Some(version.as_str()) {
-            self.card_shown_at = None;
+/// Draw the card in the top right once an update is installed, or, for a copy that cannot install
+/// it, released.
+///
+/// # Arguments
+/// * `app` - Application whose updater is shown.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The card, or `None` while there is nothing to show.
+pub(crate) fn render_card(
+    app: &mut crate::app::ViperApp,
+    cx: &mut gpui::Context<crate::app::ViperApp>,
+) -> Option<gpui::AnyElement> {
+    use crate::shared::ui::{
+        controls::{action_button, click, sz, tooltip},
+        icons::{icon, IconName},
+        theme,
+    };
+    use gpui::{div, prelude::*};
+
+    let updater = &mut app.updater;
+    let (version, action) = match updater.state() {
+        UpdateState::Ready { version } => (version, UpdateAction::Restart),
+        UpdateState::Available { version } => (version, UpdateAction::Download),
+        _ => {
+            updater.card_shown_at = None;
             return None;
         }
-        // Ease out: quick at first, settling gently into place.
-        let now = ctx.input(|input| input.time);
-        let shown_at = *self.card_shown_at.get_or_insert(now);
-        let progress = ((now - shown_at) / CARD_ENTER_SECS).clamp(0.0, 1.0) as f32;
-        let entered = 1.0 - (1.0 - progress).powi(3);
-        if progress < 1.0 {
-            ctx.request_repaint();
-        }
-        let ready = action == UpdateAction::Restart;
-        let colors = crate::shared::ui::theme::colors(ctx);
-        let mut picked = None;
-        let mut dismissed = false;
-        egui::Area::new(egui::Id::new("update-card"))
-            .order(egui::Order::Foreground)
-            .fade_in(false)
-            .anchor(
-                egui::Align2::RIGHT_TOP,
-                egui::vec2(-16.0, 46.0 - CARD_ENTER_OFFSET * (1.0 - entered)),
-            )
-            .show(ctx, |ui| {
-                ui.multiply_opacity(entered);
-                egui::Frame::new()
-                    .fill(colors.surface)
-                    .stroke(egui::Stroke::new(1.0_f32, colors.accent))
-                    .corner_radius(8.0)
-                    .inner_margin(egui::Margin::symmetric(12, 10))
-                    .show(ui, |ui| {
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(egui_phosphor::regular::ARROW_CIRCLE_UP)
-                                    .font(crate::shared::ui::theme::icon_font(18.0))
-                                    .color(colors.accent),
-                            );
-                            let status = if ready { "is ready" } else { "is out" };
-                            ui.label(
-                                egui::RichText::new(format!("Viper Music {version} {status}"))
-                                    .size(13.0)
-                                    .strong()
-                                    .color(colors.text),
-                            );
-                            let label = if ready { "Restart" } else { "Download" };
-                            if crate::shared::ui::controls::action_button(ui, label, true).clicked() {
-                                picked = Some(action);
-                            }
-                            dismissed = ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(egui_phosphor::regular::X)
-                                            .font(crate::shared::ui::theme::icon_font(14.0))
-                                            .color(colors.muted),
-                                    )
-                                    .frame(false),
-                                )
-                                .on_hover_text("Dismiss")
-                                .clicked();
-                        });
-                    });
-            });
-        if dismissed {
-            self.dismissed = Some(version);
-        }
-        picked
+    };
+    if updater.dismissed.as_deref() == Some(version.as_str()) {
+        updater.card_shown_at = None;
+        return None;
     }
+    // Ease out: quick at first, settling gently into place.
+    let shown_at = *updater.card_shown_at.get_or_insert_with(Instant::now);
+    let progress = (shown_at.elapsed().as_secs_f32() / CARD_ENTER.as_secs_f32()).clamp(0.0, 1.0);
+    let entered = 1.0 - (1.0 - progress).powi(3);
+    if progress < 1.0 {
+        app.repaint.request_repaint_after(Duration::from_millis(16));
+    }
+    let ready = action == UpdateAction::Restart;
+    let colors = theme::colors(cx);
+    let status = if ready { "is ready" } else { "is out" };
+    let button = action_button(
+        "update-action",
+        if ready { "Restart" } else { "Download" },
+        true,
+        colors,
+        click(cx, move |app, _, cx| match action {
+            UpdateAction::Restart => {
+                app.restart_requested = true;
+                app.repaint.request_repaint();
+            }
+            UpdateAction::Download => cx.open_url(RELEASES_URL),
+        }),
+    );
+    Some(
+        div()
+            .id("update-card")
+            .occlude()
+            .absolute()
+            .right(sz(16.0))
+            .top(sz(46.0 - CARD_ENTER_OFFSET * (1.0 - entered)))
+            .opacity(entered)
+            .flex()
+            .items_center()
+            .gap(sz(8.0))
+            .bg(colors.surface)
+            .border_1()
+            .border_color(colors.accent)
+            .rounded(sz(8.0))
+            .px(sz(12.0))
+            .py(sz(10.0))
+            .child(icon(IconName::CircleArrowUp, 18.0, colors.accent))
+            .child(
+                div()
+                    .text_size(sz(13.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(colors.text)
+                    .child(format!("Viper Music {version} {status}")),
+            )
+            .child(button)
+            .child(
+                div()
+                    .id("dismiss-update")
+                    .cursor_pointer()
+                    .tooltip(tooltip("Dismiss"))
+                    .on_click(click(cx, move |app, _, _| {
+                        app.updater.dismissed = Some(version.clone());
+                    }))
+                    .child(icon(IconName::X, 14.0, colors.muted)),
+            )
+            .into_any_element(),
+    )
 }
 
 impl Shared {
@@ -276,8 +287,8 @@ impl Shared {
 
     fn set(&self, state: UpdateState) {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner) = Some(state);
-        if let Some(ctx) = self.ctx.get() {
-            ctx.request_repaint();
+        if let Some(repaint) = self.repaint.get() {
+            repaint.request_repaint();
         }
     }
 
@@ -321,16 +332,12 @@ impl Shared {
     }
 
     fn update(&self, watched: bool) -> anyhow::Result<()> {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(concat!("ViperMusic/", env!("CARGO_PKG_VERSION")))
-            .timeout(CHECK_TIMEOUT)
-            .build()?;
-        let release: Release = client
+        let release: Release = agent(CHECK_TIMEOUT)
             .get(LATEST_RELEASE_API)
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
+            .call()
             .context("Could not reach GitHub")?
-            .json()
+            .body_mut()
+            .read_json()
             .context("GitHub sent an unreadable release")?;
         let version = release.tag_name.trim_start_matches('v');
         let latest = semver::Version::parse(version)
@@ -364,16 +371,20 @@ impl Shared {
 
     /// Download the AppImage beside `target`, check its SHA-256, and move it over `target`. The
     /// running copy keeps its open file, so it plays on until the restart.
-    fn download(&self, url: &str, sha256: &str, target: &Path, version: &str) -> anyhow::Result<()> {
-        let mut response = reqwest::blocking::Client::builder()
-            .user_agent(concat!("ViperMusic/", env!("CARGO_PKG_VERSION")))
-            .timeout(DOWNLOAD_TIMEOUT)
-            .build()?
+    fn download(
+        &self,
+        url: &str,
+        sha256: &str,
+        target: &Path,
+        version: &str,
+    ) -> anyhow::Result<()> {
+        let body = agent(DOWNLOAD_TIMEOUT)
             .get(url)
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .context("The download did not start")?;
-        let total = response.content_length();
+            .call()
+            .context("The download did not start")?
+            .into_body();
+        let total = body.content_length();
+        let mut response = body.into_reader();
         let partial = target.with_extension("download");
         let result = (|| {
             let mut file = fs::File::create(&partial)
@@ -439,4 +450,13 @@ impl Shared {
 /// The AppImage to run, or `None` for a plain quit.
 pub fn restart_target() -> Option<&'static Path> {
     RESTART_INTO.get().map(PathBuf::as_path)
+}
+
+/// An HTTP client that names the app and gives up after `timeout`.
+fn agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .user_agent(concat!("ViperMusic/", env!("CARGO_PKG_VERSION")))
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
 }

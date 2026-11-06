@@ -8,26 +8,32 @@ use crate::{
     },
     platform::{
         persistence::settings::{LastFmSettings, Settings, StartupView},
-        tray,
+        session::DisplaySocket,
+        tray::{self, TrayEvent},
     },
     shared::{
-        artwork::ArtworkCache, clock::unix_time_seconds, logo::LogoColorway, ui::toasts::Toasts,
+        artwork::ArtworkCache,
+        clock::unix_time_seconds,
+        logo::LogoColorway,
+        repaint::Repaint,
+        ui::{text_input::TextInputs, toasts::Toasts},
     },
-    workbench::{Page, WorkbenchState},
+    workbench::{Page, WorkbenchState, WorkbenchUi},
 };
-use anyhow::Context;
-use eframe::egui;
+use anyhow::Context as _;
+use gpui::{AnyWindowHandle, Context, FocusHandle, PathPromptOptions, Window};
 use secrecy::ExposeSecret;
 use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64},
+        mpsc::Receiver,
         Arc, Mutex, MutexGuard, PoisonError,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Main application state and egui runtime integration.
+/// Main application state, kept in an entity so it outlives the window closing to the tray.
 pub struct ViperApp {
     pub(crate) workbench: WorkbenchState,
     pub(crate) library: LibraryFeature,
@@ -53,23 +59,46 @@ pub struct ViperApp {
     /// Background update checks and installs.
     pub(crate) updater: crate::platform::updates::Updater,
     /// Set by the update card or Preferences; handled once the frame is drawn.
-    pub(super) restart_requested: bool,
+    pub(crate) restart_requested: bool,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
     #[cfg(target_os = "linux")]
     pub(crate) mpris: crate::features::playback::mpris::MprisBridge,
+    /// Wakes the poll loop from background threads and asks for redraws.
+    pub(crate) repaint: Repaint,
+    /// Focus of the window's root, which receives the global keyboard shortcuts.
+    pub(crate) focus: FocusHandle,
+    /// Text fields of the open window.
+    pub(crate) inputs: TextInputs,
+    /// Pointer and scroll state of the views, kept between frames.
+    pub(crate) ui: WorkbenchUi,
+    /// The open window, absent while hidden to the tray.
+    pub(super) window: Option<AnyWindowHandle>,
+    /// Menu selections from the tray, and launches of a second copy.
+    pub(super) tray_events: Receiver<TrayEvent>,
+    /// Display connection at startup, to notice when the session has ended.
+    pub(super) display: DisplaySocket,
 }
 
 impl ViperApp {
     /// Create the application from persisted settings, falling back to defaults on load errors.
     ///
+    /// # Arguments
+    /// * `settings_result` - Settings as loaded from disk.
+    /// * `repaint` - Handle that wakes the poll loop.
+    /// * `tray_events` - Tray and second-launch events.
+    /// * `display` - Display connection the app started on.
+    /// * `cx` - Context of the application entity.
+    ///
     /// # Returns
     /// A ready-to-run application instance.
-    pub fn new() -> Self {
-        Self::with_settings_result(Settings::load())
-    }
-
-    pub(crate) fn with_settings_result(settings_result: std::io::Result<Settings>) -> Self {
+    pub(crate) fn with_settings_result(
+        settings_result: std::io::Result<Settings>,
+        repaint: Repaint,
+        tray_events: Receiver<TrayEvent>,
+        display: DisplaySocket,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (settings, settings_error) = match settings_result {
             Ok(settings) => (settings, None),
             Err(error) => (
@@ -143,7 +172,7 @@ impl ViperApp {
             applied_logo: None,
             reopen_window: Arc::default(),
             logo_changes: Arc::default(),
-            updater: crate::platform::updates::Updater::start(),
+            updater: crate::platform::updates::Updater::start(repaint.clone()),
             restart_requested: false,
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
@@ -155,6 +184,13 @@ impl ViperApp {
                 }),
             #[cfg(target_os = "linux")]
             mpris,
+            repaint,
+            focus: cx.focus_handle(),
+            inputs: TextInputs::default(),
+            ui: WorkbenchUi::default(),
+            window: None,
+            tray_events,
+            display,
         };
         for error in [settings_error, lastfm_error].into_iter().flatten() {
             app.toasts.push(error);
@@ -205,23 +241,61 @@ impl ViperApp {
         );
     }
 
-    pub(crate) fn choose_folder(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Choose your music folder")
-            .pick_folder()
-        {
-            self.settings.music_path = Some(path.clone());
-            let settings_error = self
-                .settings
-                .save()
-                .err()
-                .map(|error| format!("Could not save settings: {error}"));
-            self.start_scan(path);
-            self.artwork_cache.clear();
-            self.workbench.show_album_details = false;
-            if let Some(error) = settings_error {
-                self.toasts.push(error);
-            }
+    /// Ask for a local music folder, then scan it.
+    pub(crate) fn choose_folder(cx: &mut Context<Self>) {
+        Self::pick_folder(cx, Self::set_music_folder);
+    }
+
+    /// Ask for a folder, then hand it to `chosen`.
+    ///
+    /// # Arguments
+    /// * `cx` - Application entity context.
+    /// * `chosen` - Called with the folder once one is picked.
+    pub(crate) fn pick_folder(
+        cx: &mut Context<Self>,
+        chosen: impl FnOnce(&mut Self, PathBuf) + 'static,
+    ) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(result) = paths.await else {
+                return;
+            };
+            let _ = this.update(cx, |app, cx| {
+                match result {
+                    Ok(Some(mut paths)) => {
+                        if let Some(path) = paths.pop() {
+                            chosen(app, path);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => app
+                        .toasts
+                        .push(format!("Could not open the folder picker: {error}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Make `path` the music folder and scan it.
+    fn set_music_folder(&mut self, path: PathBuf) {
+        self.settings.music_path = Some(path.clone());
+        let settings_error = self
+            .settings
+            .save()
+            .err()
+            .map(|error| format!("Could not save settings: {error}"));
+        self.start_scan(path);
+        self.artwork_cache.clear();
+        self.workbench.show_album_details = false;
+        if let Some(error) = settings_error {
+            self.toasts.push(error);
         }
     }
 
@@ -266,7 +340,24 @@ impl ViperApp {
         }
     }
 
-    fn save_album_state<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
+    /// Whether an album's cover is still on its way, so its placeholder shows it loading rather
+    /// than an album without a cover.
+    ///
+    /// # Arguments
+    /// * `album_index` - Index into the library's albums.
+    pub(crate) fn cover_pending(&self, album_index: usize) -> bool {
+        match self.library.model.albums.get(album_index) {
+            Some(album) if album.art.is_some() => !self.artwork_cache.failed(album_index),
+            Some(_) => self.library.background.loading_artwork(),
+            None => false,
+        }
+    }
+
+    /// Save ratings and favorites of the albums with `keys`, showing a toast on failure.
+    ///
+    /// # Arguments
+    /// * `keys` - Keys of the albums whose state changed.
+    pub(crate) fn save_album_state<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
         if let Err(error) = self.settings.save_album_state(keys) {
             self.toasts
                 .push(format!("Could not save album state: {error}"));
@@ -305,10 +396,11 @@ impl ViperApp {
     }
 
     /// Track the window size in memory; it is persisted once when the application exits.
-    pub(super) fn observe_window_size(&mut self, ctx: &egui::Context) {
-        let size = ctx.input(|input| input.viewport_rect().size());
-        if size.x.is_finite() && size.y.is_finite() && size.x >= 760.0 && size.y >= 520.0 {
-            self.settings.window_size = Some([size.x.round(), size.y.round()]);
+    pub(super) fn observe_window_size(&mut self, window: &Window) {
+        let size = window.viewport_size();
+        let [width, height] = [f32::from(size.width), f32::from(size.height)];
+        if width.is_finite() && height.is_finite() && width >= 760.0 && height >= 520.0 {
+            self.settings.window_size = Some([width.round(), height.round()]);
         }
     }
 

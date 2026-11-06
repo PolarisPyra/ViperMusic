@@ -1,214 +1,247 @@
-use super::screen::{
-    album_format_label, describe_album, open_album, paint_cover_with_opacity, paint_format_badge,
-    play_album, show_album_context_menu, show_shimmer_rect, AlbumScreen,
-};
+use super::screen::{album_cover, album_description, album_interactions, prefetch_covers, shimmer};
 use crate::{
-    platform::persistence::settings::Settings,
+    app::ViperApp,
     shared::ui::{
-        column_resize::{column_boundaries, show_column_handles},
-        theme,
-        toasts::Toasts,
+        column_resize::{column_fractions, column_handle, drag_divider, ColumnDrag},
+        controls::{listen, sz, unzoomed},
+        theme::{self, Palette},
     },
 };
-use eframe::egui;
+use gpui::{
+    div, prelude::*, px, relative, uniform_list, AnyElement, Context, Div, DragMoveEvent, Hsla,
+    ScrollStrategy, SharedString,
+};
+use gpui_component::scroll::ScrollableElement;
+use std::{ops::Range, sync::Arc};
 
+/// Name of the album list's columns for divider drags.
+const TABLE: &str = "album-list";
 const ARTWORK_COLUMN_WIDTH: f32 = 82.0;
 const COLUMN_CONTENT_INSET: f32 = 12.0;
+/// Space between a row and the list's edges.
+const ROW_INSET: f32 = 8.0;
+const ROW_HEIGHT: f32 = 72.0;
+const ROW_GAP: f32 = 1.0;
+/// Rows outside the view whose covers are loaded ahead, on either side.
+const PREFETCH_ROWS: usize = 6;
 
-pub(super) fn show_header(
-    ui: &mut egui::Ui,
-    width: f32,
-    settings: &mut Settings,
-    toasts: &mut Toasts,
-) {
-    let colors = theme::colors(ui.ctx());
-    const HEADER_HEIGHT: f32 = 32.0;
-    let header = ui
-        .allocate_exact_size(egui::vec2(width, HEADER_HEIGHT), egui::Sense::hover())
-        .0;
-    let start = header.left() + 8.0 + ARTWORK_COLUMN_WIDTH;
-    let end = header.right() - 8.0;
-    if show_column_handles(
-        ui,
-        header,
-        start,
-        end,
-        &mut settings.album_list_column_widths,
-        "album-list-column-resize",
-    ) {
-        if let Err(save_error) = settings.save() {
-            toasts.push(format!(
-                "Could not save album list column widths: {save_error}"
-            ));
-        }
-    }
-    let positions = column_boundaries(start, end, settings.album_list_column_widths);
-    for (x, label) in [
-        (positions[0] + COLUMN_CONTENT_INSET, "Title"),
-        (positions[1] + COLUMN_CONTENT_INSET, "Artist"),
-        (positions[2] + COLUMN_CONTENT_INSET, "Date"),
-    ] {
-        ui.painter().text(
-            egui::pos2(x, header.center().y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::FontId::proportional(13.0),
-            colors.muted,
-        );
-    }
-    ui.painter().line_segment(
-        [header.left_bottom(), header.right_bottom()],
-        egui::Stroke::new(1.0_f32, colors.border),
-    );
+/// Draw the list's column titles, whose dividers can be dragged to resize the columns.
+///
+/// # Arguments
+/// * `app` - Application holding the column widths.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The header element.
+pub(super) fn header(app: &ViperApp, cx: &mut Context<ViperApp>) -> AnyElement {
+    let colors = theme::colors(cx);
+    let fractions = column_fractions(app.settings.album_list_column_widths);
+    let dragging = app
+        .ui
+        .column_drag
+        .filter(|(table, _)| *table == TABLE)
+        .map(|(_, boundary)| boundary);
+    let titles = ["Title", "Artist", "Date"]
+        .into_iter()
+        .zip(fractions)
+        .map(|(title, fraction)| {
+            column(fraction)
+                .text_size(sz(12.0))
+                .text_color(colors.muted)
+                .child(title)
+        });
+    let span = div()
+        .id("album-list-columns")
+        .relative()
+        .flex()
+        .flex_1()
+        .h_full()
+        .children(titles)
+        .child(column_handle(
+            TABLE,
+            1,
+            fractions[0],
+            dragging == Some(1),
+            colors,
+        ))
+        .child(column_handle(
+            TABLE,
+            2,
+            fractions[0] + fractions[1],
+            dragging == Some(2),
+            colors,
+        ))
+        .on_drag_move(listen(
+            cx,
+            |app, event: &DragMoveEvent<ColumnDrag>, window, cx| {
+                let drag = event.drag(cx);
+                if drag.table != TABLE {
+                    return;
+                }
+                let boundary = drag.boundary;
+                let x = unzoomed(event.event.position.x - event.bounds.left(), window);
+                let width = unzoomed(event.bounds.size.width, window);
+                drag_divider(
+                    &mut app.settings.album_list_column_widths,
+                    boundary,
+                    x,
+                    width,
+                );
+                app.ui.column_drag = Some((TABLE, boundary));
+            },
+        ));
+    div()
+        .flex()
+        .flex_none()
+        .h(sz(32.0))
+        .px(sz(ROW_INSET))
+        .border_b_1()
+        .border_color(colors.border)
+        .child(div().flex_none().w(sz(ARTWORK_COLUMN_WIDTH)))
+        .child(span)
+        .into_any_element()
 }
 
-pub(super) fn show_album_list(
-    ctx: &egui::Context,
-    ui: &mut egui::Ui,
-    screen: &mut AlbumScreen<'_>,
-    albums: &[usize],
-    viewport: egui::Rect,
-    width: f32,
+/// One flexible column taking `fraction` of the row's span.
+fn column(fraction: f32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .flex_none()
+        .w(relative(fraction))
+        .h_full()
+        .pl(sz(COLUMN_CONTENT_INSET))
+        .pr(sz(12.0))
+        .overflow_hidden()
+}
+
+/// Draw albums as rows of a table, drawing only the rows in view.
+///
+/// # Arguments
+/// * `app` - Application holding the library.
+/// * `albums` - Albums to show, in order.
+/// * `scroll_to` - Position in `albums` to scroll into view.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The list element.
+pub(super) fn render(
+    app: &mut ViperApp,
+    albums: &Arc<Vec<usize>>,
     scroll_to: Option<usize>,
-) {
-    let colors = theme::colors(ui.ctx());
-    const ROW_HEIGHT: f32 = 72.0;
-    const ROW_GAP: f32 = 1.0;
-    let row_step = ROW_HEIGHT + ROW_GAP;
-    let rows = albums.len();
-    let content = ui.max_rect();
-    let rows_top = content.top();
-    ui.set_height(rows as f32 * row_step);
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let scroll = app.ui.albums_scroll.clone();
     if let Some(position) = scroll_to {
-        ui.scroll_to_rect(
-            egui::Rect::from_min_size(
-                egui::pos2(content.left(), rows_top + position as f32 * row_step),
-                egui::vec2(width, ROW_HEIGHT),
-            ),
-            Some(egui::Align::Center),
-        );
+        scroll.scroll_to_item(position, ScrollStrategy::Center);
     }
-    let first = ((viewport.min.y.max(0.0) / row_step).floor() as usize).min(rows);
-    let last = ((viewport.max.y.max(0.0) / row_step).ceil() as usize + 1).min(rows);
-    let row_left = content.left() + 8.0;
-    let row_width = (width - 16.0).max(0.0);
-    let columns = column_boundaries(
-        row_left + ARTWORK_COLUMN_WIDTH,
-        row_left + row_width - 8.0,
-        screen.settings.album_list_column_widths,
-    );
-    let title_x = columns[0] + COLUMN_CONTENT_INSET;
-    let artist_x = columns[1] + COLUMN_CONTENT_INSET;
-    let date_x = columns[2] + COLUMN_CONTENT_INSET;
-    let title_width = (columns[1] - title_x - 12.0).max(0.0);
-    let artist_width = (columns[2] - artist_x - 12.0).max(0.0);
-    let date_width = (columns[3] - date_x - 8.0).max(0.0);
-
-    for (row, &album_index) in albums.iter().enumerate().take(last).skip(first) {
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(row_left, rows_top + row as f32 * row_step),
-            egui::vec2(row_width, ROW_HEIGHT),
-        );
-        let selected = screen.library.view.highlighted_album == Some(album_index);
-        let response = ui.interact(
-            rect,
-            ui.id().with(("album-list-row", album_index)),
-            egui::Sense::click(),
-        );
-        if let Some(album) = screen.library.model.albums.get(album_index) {
-            describe_album(&response, album, selected);
-        }
-        if selected || response.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink2(egui::vec2(0.0, 2.0)),
-                0.0,
-                if selected {
-                    colors.selected
-                } else {
-                    colors.hover
-                },
-            );
-        }
-
-        let cover = screen.album_texture(ctx, album_index);
-        let cover_opacity = screen.album_texture_opacity(ctx, album_index);
-        let Some(album) = screen.library.model.albums.get(album_index) else {
-            continue;
-        };
-        let cover_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 10.0, rect.center().y - 28.0),
-            egui::vec2(56.0, 56.0),
-        );
-        if let Some(cover) = &cover {
-            if cover_opacity < 1.0 {
-                show_shimmer_rect(ui, cover_rect, 6.0);
-            }
-            paint_cover_with_opacity(ui, cover, cover_rect, cover_opacity);
-        } else {
-            ui.painter().rect_filled(cover_rect, 6.0, colors.surface);
-            ui.painter().text(
-                cover_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::DISC,
-                theme::icon_font(20.0),
-                colors.muted,
-            );
-        }
-        if screen.settings.album_format_badges {
-            paint_format_badge(
-                ui,
-                cover_rect,
-                album_format_label(&screen.library.model, album),
-            );
-        }
-
-        let year = album
-            .tracks
-            .iter()
-            .filter_map(|index| screen.library.model.tracks.get(*index)?.release_year)
-            .min()
-            .map_or_else(|| "—".to_owned(), |year| year.to_string());
-
-        for (x, column_width, text, color) in [
-            (title_x, title_width, album.title.as_str(), colors.text),
-            (artist_x, artist_width, album.artist.as_str(), colors.muted),
-            (date_x, date_width, year.as_str(), colors.muted),
-        ] {
-            let column_rect = egui::Rect::from_min_size(
-                egui::pos2(x, rect.top()),
-                egui::vec2(column_width, ROW_HEIGHT),
-            );
-            ui.painter().with_clip_rect(column_rect).text(
-                egui::pos2(x, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                text,
-                egui::FontId::proportional(13.0),
-                color,
-            );
-        }
-        ui.painter().line_segment(
-            [rect.left_bottom(), rect.right_bottom()],
-            egui::Stroke::new(1.0_f32, colors.border),
-        );
-        if response.double_clicked() {
-            play_album(screen, album_index);
-        } else if response.clicked() {
-            open_album(ctx, screen, album_index);
-        }
-        show_album_context_menu(response, screen, album_index);
-    }
+    let albums = Arc::clone(albums);
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .child(
+            uniform_list(
+                "album-list-scroll",
+                albums.len(),
+                cx.processor(move |app, range: Range<usize>, _, cx| {
+                    let colors = theme::colors(cx);
+                    let rows = range
+                        .clone()
+                        .map(|row| row_element(app, albums[row], colors, cx))
+                        .collect::<Vec<_>>();
+                    let above = range.start.saturating_sub(PREFETCH_ROWS);
+                    let below = (range.end + PREFETCH_ROWS).min(albums.len());
+                    prefetch_covers(app, &albums[above..range.start]);
+                    prefetch_covers(app, &albums[range.end..below]);
+                    rows
+                }),
+            )
+            .track_scroll(&scroll)
+            .px(sz(ROW_INSET))
+            .size_full(),
+        )
+        .vertical_scrollbar(&scroll)
+        .into_any_element()
 }
 
-pub(super) fn show_skeleton_list(ctx: &egui::Context, ui: &mut egui::Ui) {
-    for _ in 0..6 {
-        let (row, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 72.0), egui::Sense::hover());
-        show_shimmer_rect(
-            ui,
-            egui::Rect::from_min_size(row.min + egui::vec2(10.0, 8.0), egui::vec2(56.0, 56.0)),
-            6.0,
+/// Draw one album row: cover, title, artist, and release year.
+fn row_element(
+    app: &mut ViperApp,
+    index: usize,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let cover = album_cover(app, index, 56.0, 6.0, colors);
+    let library = &app.library.model;
+    let Some(album) = library.albums.get(index) else {
+        return div().h(sz(ROW_HEIGHT + ROW_GAP)).into_any_element();
+    };
+    let selected = app.library.view.highlighted_album == Some(index);
+    let year = album
+        .tracks
+        .iter()
+        .filter_map(|&track| library.tracks.get(track)?.release_year)
+        .min()
+        .map_or_else(|| "—".to_owned(), |year| year.to_string());
+    let fractions = column_fractions(app.settings.album_list_column_widths);
+    let cell = |fraction: f32, text: SharedString, color: Hsla| {
+        column(fraction)
+            .text_size(sz(13.0))
+            .text_color(color)
+            .child(div().truncate().child(text))
+    };
+    let row = div()
+        .id(("album-list-row", index))
+        .role(gpui::Role::ListItem)
+        .aria_label(album_description(album))
+        .flex()
+        .items_center()
+        .w_full()
+        .h(sz(ROW_HEIGHT))
+        .my(px(2.0))
+        .border_b_1()
+        .border_color(colors.border)
+        .cursor_pointer()
+        .when(selected, |row| row.bg(colors.selected))
+        .when(!selected, |row| row.hover(|style| style.bg(colors.hover)))
+        .child(
+            div()
+                .flex_none()
+                .w(sz(ARTWORK_COLUMN_WIDTH))
+                .pl(sz(10.0))
+                .child(cover),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .h_full()
+                .child(cell(fractions[0], album.title.clone().into(), colors.text))
+                .child(cell(
+                    fractions[1],
+                    album.artist.clone().into(),
+                    colors.muted,
+                ))
+                .child(cell(fractions[2], year.into(), colors.muted)),
         );
-        ui.add_space(1.0);
-    }
-    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    div()
+        .h(sz(ROW_HEIGHT + ROW_GAP))
+        .child(album_interactions(row, index, cx))
+        .into_any_element()
+}
+
+/// Placeholder rows shown while the first scan runs.
+pub(super) fn skeleton(app: &ViperApp, colors: Palette) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .children((0..6).map(|_| {
+            div()
+                .h(sz(ROW_HEIGHT + ROW_GAP))
+                .pl(sz(10.0))
+                .pt(sz(8.0))
+                .child(shimmer(app, 6.0, colors).size(sz(56.0)))
+        }))
+        .into_any_element()
 }

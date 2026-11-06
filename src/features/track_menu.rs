@@ -1,69 +1,65 @@
 //! Context menu shared by every view that lists individual tracks.
-use crate::{
-    features::{library::Library, playback::Playback},
-    platform::desktop,
-    shared::ui::{controls::menu_entry, toasts::Toasts},
-};
-use eframe::egui;
+use crate::{app::ViperApp, platform::desktop, shared::ui::controls::menu_item};
+use gpui::{App, WeakEntity};
+use gpui_component::menu::PopupMenu;
 
-/// Navigation requested from a track context menu.
-pub(crate) enum TrackMenuAction {
-    /// Open the album at this index.
-    GoToAlbum(usize),
-}
-
-/// Draw queue, navigation, and folder actions for one track inside an open context menu.
+/// Add queue, navigation, and folder entries for one track to a context menu.
 ///
 /// # Arguments
-/// * `ui` - Context menu UI.
-/// * `playback` - Playback queue to modify.
-/// * `library` - Library containing the track.
+/// * `menu` - Menu being built.
+/// * `app` - Application the entries act on.
 /// * `track_index` - Track the menu was opened for.
 /// * `offer_go_to_album` - Whether to show "Go to album" when the track belongs to one.
-/// * `toasts` - Receives an error if the folder cannot be opened.
+/// * `cx` - Application context, to read the library.
 ///
 /// # Returns
-/// A navigation request the caller should apply.
-pub(crate) fn show(
-    ui: &mut egui::Ui,
-    playback: &mut Playback,
-    library: &Library,
+/// The menu with the track's entries added.
+pub(crate) fn build(
+    menu: PopupMenu,
+    app: &WeakEntity<ViperApp>,
     track_index: usize,
     offer_go_to_album: bool,
-    toasts: &mut Toasts,
-) -> Option<TrackMenuAction> {
-    crate::shared::ui::theme::style_menu_contents(ui, 220.0);
-    let mut action = None;
-    if menu_entry(ui, true, "Play next") {
-        playback.play_next(&[track_index]);
-    }
-    if menu_entry(ui, true, "Add to queue") {
-        playback.enqueue(&[track_index]);
-    }
+    cx: &App,
+) -> PopupMenu {
+    let Some(entity) = app.upgrade() else {
+        return menu;
+    };
+    let library = &entity.read(cx).library.model;
     let album = library
         .track_album
         .get(track_index)
         .copied()
         .flatten()
-        .map(|album| album.get());
-    if offer_go_to_album {
-        if let Some(album) = album {
-            if menu_entry(ui, true, "Go to album") {
-                action = Some(TrackMenuAction::GoToAlbum(album));
-            }
-        }
-    }
+        .map(|album| album.get())
+        .filter(|_| offer_go_to_album);
     let folder = library
         .tracks
         .get(track_index)
         .and_then(|track| track.path.parent())
-        .filter(|folder| !crate::features::library::is_smb_path(folder));
-    if menu_entry(ui, folder.is_some(), "Open containing folder") {
-        if let Some(folder) = folder {
-            if let Err(error) = desktop::open_folder(folder) {
-                toasts.push(format!("Could not open {}: {error}", folder.display()));
-            }
-        }
+        .filter(|folder| !crate::features::library::is_smb_path(folder))
+        .map(std::path::Path::to_path_buf);
+    let mut menu = menu
+        .item(menu_item("Play next", app, move |app, _, _| {
+            app.playback().play_next(&[track_index]);
+        }))
+        .item(menu_item("Add to queue", app, move |app, _, _| {
+            app.playback().enqueue(&[track_index]);
+        }));
+    if let Some(album) = album {
+        menu = menu.item(menu_item("Go to album", app, move |app, _, _| {
+            app.workbench.open_album(&mut app.library.view, album);
+        }));
     }
-    action
+    let has_folder = folder.is_some();
+    menu.item(
+        menu_item("Open containing folder", app, move |app, _, _| {
+            if let Some(folder) = &folder {
+                if let Err(error) = desktop::open_folder(folder) {
+                    app.toasts
+                        .push(format!("Could not open {}: {error}", folder.display()));
+                }
+            }
+        })
+        .disabled(!has_folder),
+    )
 }

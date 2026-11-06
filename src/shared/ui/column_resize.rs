@@ -1,24 +1,13 @@
-use crate::shared::ui::theme;
-use eframe::egui;
+use crate::shared::ui::{
+    controls::{sz, tooltip},
+    theme::Palette,
+};
+use gpui::{div, prelude::*, px, relative, AppContext, CursorStyle, EmptyView, SharedString};
 
 /// Narrowest width a flexible column may shrink to while dragging.
 pub(crate) const MIN_COLUMN_WIDTH: f32 = 64.0;
 /// Width of the invisible grab area centered on each column divider.
 const HANDLE_GRAB_WIDTH: f32 = 12.0;
-
-/// Split the span between `start` and `end` into one column per proportion.
-///
-/// # Arguments
-/// * `start` - Left edge of the first column.
-/// * `end` - Right edge of the last column.
-/// * `proportions` - Relative width of each of the three flexible columns.
-///
-/// # Returns
-/// The four x positions: the start, the two dividers, and the end.
-pub(crate) fn column_boundaries(start: f32, end: f32, proportions: [f32; 3]) -> [f32; 4] {
-    let widths = distribute_column_widths((end - start).max(0.0), proportions);
-    [start, start + widths[0], start + widths[0] + widths[1], end]
-}
 
 /// Convert proportions into pixel widths, enforcing a minimum width per column.
 ///
@@ -72,75 +61,99 @@ pub(crate) fn distribute_column_widths(total_width: f32, proportions: [f32; 3]) 
     widths
 }
 
-/// Draw the draggable dividers between flexible columns and apply any drag to `proportions`.
-///
-/// Dividers are drawn in the header row and highlight while hovered or dragged.
+/// A divider being dragged between two flexible columns of a table.
+pub(crate) struct ColumnDrag {
+    /// Table the divider belongs to.
+    pub(crate) table: &'static str,
+    /// Index of the divider: 1 between the first two columns, 2 between the last two.
+    pub(crate) boundary: usize,
+}
+
+/// Fractions of the flexible span each column takes, summing to one.
 ///
 /// # Arguments
-/// * `ui` - Ui that hosts the header row.
-/// * `header` - Header rectangle the dividers are drawn in.
-/// * `start` - Left edge of the first flexible column.
-/// * `end` - Right edge of the last flexible column.
-/// * `proportions` - Relative widths of the flexible columns, updated in place while dragging.
-/// * `id_salt` - Unique salt that keeps each table's divider interactions separate.
+/// * `proportions` - Relative widths of the flexible columns.
 ///
 /// # Returns
-/// `true` when a drag ended this frame, so the caller can persist the new widths.
-pub(crate) fn show_column_handles(
-    ui: &mut egui::Ui,
-    header: egui::Rect,
-    start: f32,
-    end: f32,
-    proportions: &mut [f32; 3],
-    id_salt: &'static str,
-) -> bool {
-    let colors = theme::colors(ui.ctx());
-    let total_width = (end - start).max(0.0);
-    let mut boundaries = column_boundaries(start, end, *proportions);
-    let mut drag_stopped = false;
-    for boundary in 1..3 {
-        let x = boundaries[boundary];
-        let handle = egui::Rect::from_center_size(
-            egui::pos2(x, header.center().y),
-            egui::vec2(HANDLE_GRAB_WIDTH, header.height()),
-        );
-        let response = ui
-            .interact(
-                handle,
-                ui.id().with((id_salt, boundary)),
-                egui::Sense::drag(),
-            )
-            .on_hover_text("Drag to resize column");
-        let active = response.hovered() || response.dragged();
-        if active {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        }
-        if response.dragged() && total_width > 0.0 {
-            let widths = distribute_column_widths(total_width, *proportions);
-            let minimum = MIN_COLUMN_WIDTH.min(total_width / 3.0);
-            let delta = response
-                .drag_delta()
-                .x
-                .clamp(minimum - widths[boundary - 1], widths[boundary] - minimum);
-            if delta != 0.0 {
-                let mut resized = widths;
-                resized[boundary - 1] += delta;
-                resized[boundary] -= delta;
-                *proportions = resized.map(|column_width| column_width / total_width);
-                boundaries = column_boundaries(start, end, *proportions);
-            }
-        }
-        drag_stopped |= response.drag_stopped();
-        ui.painter().line_segment(
-            [
-                egui::pos2(x, header.top() + 6.0),
-                egui::pos2(x, header.bottom() - 6.0),
-            ],
-            egui::Stroke::new(
-                if active { 2.0 } else { 1.0_f32 },
-                if active { colors.accent } else { colors.border },
-            ),
-        );
+/// Each column's fraction, equal when the proportions are unusable.
+pub(crate) fn column_fractions(proportions: [f32; 3]) -> [f32; 3] {
+    distribute_column_widths(1.0, proportions)
+}
+
+/// Move the divider `boundary` to `x`, measured from the start of a flexible span `width` wide.
+///
+/// # Arguments
+/// * `proportions` - Relative widths of the flexible columns, updated in place.
+/// * `boundary` - Divider being dragged, 1 or 2.
+/// * `x` - Pointer position from the start of the span.
+/// * `width` - Width of the span.
+pub(crate) fn drag_divider(proportions: &mut [f32; 3], boundary: usize, x: f32, width: f32) {
+    if width <= 0.0 || !(1..3).contains(&boundary) {
+        return;
     }
-    drag_stopped
+    let widths = distribute_column_widths(width, *proportions);
+    let minimum = MIN_COLUMN_WIDTH.min(width / 3.0);
+    let current = widths[..boundary].iter().sum::<f32>();
+    let delta = (x - current).clamp(minimum - widths[boundary - 1], widths[boundary] - minimum);
+    if delta != 0.0 {
+        let mut resized = widths;
+        resized[boundary - 1] += delta;
+        resized[boundary] -= delta;
+        *proportions = resized.map(|column_width| column_width / width);
+    }
+}
+
+/// Draw the grab area of the divider `boundary`, placed `offset` of the way across its span.
+///
+/// The divider highlights while hovered or dragged; dragging it reports [`ColumnDrag`] moves to
+/// the span's `on_drag_move` listener.
+///
+/// # Arguments
+/// * `table` - Table the divider belongs to.
+/// * `boundary` - Divider index, 1 or 2.
+/// * `offset` - Fraction of the span left of the divider.
+/// * `dragging` - Whether this divider is being dragged.
+/// * `colors` - Active theme palette.
+///
+/// # Returns
+/// The divider element.
+pub(crate) fn column_handle(
+    table: &'static str,
+    boundary: usize,
+    offset: f32,
+    dragging: bool,
+    colors: Palette,
+) -> impl IntoElement {
+    let line = |color| {
+        div()
+            .absolute()
+            .top(sz(6.0))
+            .bottom(sz(6.0))
+            .left(sz(HANDLE_GRAB_WIDTH / 2.0 - 0.5))
+            .w(px(1.0))
+            .bg(color)
+    };
+    let group = SharedString::from(format!("{table}-divider-{boundary}"));
+    div()
+        .id((table, boundary))
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(relative(offset))
+        .ml(sz(-HANDLE_GRAB_WIDTH / 2.0))
+        .w(sz(HANDLE_GRAB_WIDTH))
+        .cursor(CursorStyle::ResizeLeftRight)
+        .tooltip(tooltip("Drag to resize column"))
+        .group(group.clone())
+        .child(
+            line(if dragging {
+                colors.accent
+            } else {
+                colors.border
+            })
+            .group_hover(group, |style| style.bg(colors.accent)),
+        )
+        .on_drag(ColumnDrag { table, boundary }, |_, _, _, cx| {
+            cx.new(|_| EmptyView)
+        })
 }

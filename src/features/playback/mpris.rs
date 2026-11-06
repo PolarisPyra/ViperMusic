@@ -120,7 +120,7 @@ impl MprisBridge {
         let _ = thread::Builder::new()
             .name("viper-mpris".into())
             .spawn(move || {
-                async_std::task::block_on(async move {
+                smol::block_on(async move {
                     let player = match Player::builder("viper")
                         .identity("Viper")
                         .desktop_entry("viper")
@@ -155,7 +155,7 @@ impl MprisBridge {
                                     .await;
                                 previous_snapshot = Some(snapshot);
                             }
-                            async_std::task::sleep(Duration::from_millis(20)).await;
+                            smol::Timer::after(Duration::from_millis(20)).await;
                         }
                     })
                     .await;

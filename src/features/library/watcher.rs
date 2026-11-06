@@ -1,6 +1,6 @@
 //! Recursive local filesystem watching for library changes.
 use super::is_audio_path;
-use eframe::egui;
+use crate::shared::repaint::Repaint;
 use notify::{
     event::{ModifyKind, RenameMode},
     Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
@@ -59,14 +59,14 @@ impl FileWatcher {
     ///
     /// # Arguments
     /// * `root` - Folder to watch.
-    /// * `repaint` - egui context used to request redraws on events.
+    /// * `repaint` - Wakes the application on events.
     ///
     /// # Returns
     /// An active watcher.
     ///
     /// # Errors
     /// Returns a notify error if the watcher cannot be created or registered.
-    pub fn new(root: &Path, repaint: egui::Context) -> notify::Result<Self> {
+    pub(crate) fn new(root: &Path, repaint: Repaint) -> notify::Result<Self> {
         let (sender, events) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);

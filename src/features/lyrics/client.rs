@@ -2,7 +2,7 @@ use crate::features::library::Track;
 use serde::Deserialize;
 use std::{sync::OnceLock, time::Duration};
 
-static HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+static HTTP_CLIENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 /// One displayable lyric line, optionally tied to a playback timestamp.
@@ -42,17 +42,14 @@ pub(super) fn fetch(track: &Track) -> Result<Option<Lyrics>, String> {
     if track.title.trim().is_empty() || track.artist.trim().is_empty() {
         return Ok(None);
     }
-    let client = HTTP_CLIENT
-        .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(6))
-                .user_agent(format!("Viper/{}", env!("CARGO_PKG_VERSION")))
-                .build()
-                .map_err(|error| format!("Could not prepare lyrics request: {error}"))
-        })
-        .as_ref()
-        .map_err(Clone::clone)?
-        .clone();
+    let client = HTTP_CLIENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(6)))
+            .user_agent(concat!("Viper/", env!("CARGO_PKG_VERSION")))
+            .http_status_as_error(false)
+            .build()
+            .into()
+    });
     let mut query = vec![
         ("track_name", track.title.as_str()),
         ("artist_name", track.artist.as_str()),
@@ -66,19 +63,21 @@ pub(super) fn fetch(track: &Track) -> Result<Option<Lyrics>, String> {
     if let Some(duration) = duration_seconds.as_deref() {
         query.push(("duration", duration));
     }
-    let response = client
+    let mut response = client
         .get("https://lrclib.net/api/get")
-        .query(&query)
-        .send()
+        .query_pairs(query)
+        .call()
         .map_err(|error| format!("Could not fetch lyrics: {error}"))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    let status = response.status();
+    if status == ureq::http::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let response = response
-        .error_for_status()
-        .map_err(|error| format!("Lyrics service returned an error: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("Lyrics service returned an error: HTTP {status}"));
+    }
     let response: LrclibResponse = response
-        .json()
+        .body_mut()
+        .read_json()
         .map_err(|error| format!("Could not read lyrics response: {error}"))?;
     if response.instrumental == Some(true) {
         return Ok(None);

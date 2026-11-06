@@ -1,6 +1,6 @@
 //! Catppuccin palette adapter, ported from <https://github.com/catppuccin/egui> (MIT).
-use super::palette::{Palette, ThemeDefinition};
-use eframe::egui::{self, epaint, style};
+use super::palette::{black_alpha, lerp, rgb, Palette, ThemeDefinition};
+use gpui::Rgba;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Flavor {
@@ -11,36 +11,26 @@ pub(super) enum Flavor {
 }
 
 struct Colors {
-    rosewater: egui::Color32,
-    mauve: egui::Color32,
-    red: egui::Color32,
-    maroon: egui::Color32,
-    peach: egui::Color32,
-    yellow: egui::Color32,
-    blue: egui::Color32,
-    text: egui::Color32,
-    subtext0: egui::Color32,
-    overlay1: egui::Color32,
-    surface2: egui::Color32,
-    surface1: egui::Color32,
-    surface0: egui::Color32,
-    base: egui::Color32,
-    mantle: egui::Color32,
-    crust: egui::Color32,
-}
-
-const fn rgb(red: u8, green: u8, blue: u8) -> egui::Color32 {
-    egui::Color32::from_rgb(red, green, blue)
+    mauve: Rgba,
+    red: Rgba,
+    yellow: Rgba,
+    blue: Rgba,
+    text: Rgba,
+    subtext0: Rgba,
+    overlay1: Rgba,
+    surface2: Rgba,
+    surface1: Rgba,
+    surface0: Rgba,
+    base: Rgba,
+    mantle: Rgba,
+    crust: Rgba,
 }
 
 fn colors(flavor: Flavor) -> Colors {
     match flavor {
         Flavor::Latte => Colors {
-            rosewater: rgb(220, 138, 120),
             mauve: rgb(136, 57, 239),
             red: rgb(210, 15, 57),
-            maroon: rgb(230, 69, 83),
-            peach: rgb(254, 100, 11),
             yellow: rgb(223, 142, 29),
             blue: rgb(30, 102, 245),
             text: rgb(76, 79, 105),
@@ -54,11 +44,8 @@ fn colors(flavor: Flavor) -> Colors {
             crust: rgb(220, 224, 232),
         },
         Flavor::Frappe => Colors {
-            rosewater: rgb(242, 213, 207),
             mauve: rgb(202, 158, 230),
             red: rgb(231, 130, 132),
-            maroon: rgb(234, 153, 156),
-            peach: rgb(239, 159, 118),
             yellow: rgb(229, 200, 144),
             blue: rgb(140, 170, 238),
             text: rgb(198, 208, 245),
@@ -72,11 +59,8 @@ fn colors(flavor: Flavor) -> Colors {
             crust: rgb(35, 38, 52),
         },
         Flavor::Macchiato => Colors {
-            rosewater: rgb(244, 219, 214),
             mauve: rgb(198, 160, 246),
             red: rgb(237, 135, 150),
-            maroon: rgb(238, 153, 160),
-            peach: rgb(245, 169, 127),
             yellow: rgb(238, 212, 159),
             blue: rgb(138, 173, 244),
             text: rgb(202, 211, 245),
@@ -90,11 +74,8 @@ fn colors(flavor: Flavor) -> Colors {
             crust: rgb(24, 25, 38),
         },
         Flavor::Mocha => Colors {
-            rosewater: rgb(245, 224, 220),
             mauve: rgb(203, 166, 247),
             red: rgb(243, 139, 168),
-            maroon: rgb(235, 160, 172),
-            peach: rgb(250, 179, 135),
             yellow: rgb(249, 226, 175),
             blue: rgb(137, 180, 250),
             text: rgb(205, 214, 244),
@@ -110,96 +91,28 @@ fn colors(flavor: Flavor) -> Colors {
     }
 }
 
-fn widget_visuals(
-    old: style::WidgetVisuals,
-    theme: &Colors,
-    bg_fill: egui::Color32,
-) -> style::WidgetVisuals {
-    style::WidgetVisuals {
-        bg_fill,
-        weak_bg_fill: bg_fill,
-        bg_stroke: egui::Stroke {
-            color: theme.overlay1,
-            ..old.bg_stroke
-        },
-        fg_stroke: egui::Stroke {
-            color: theme.text,
-            ..old.fg_stroke
-        },
-        ..old
-    }
-}
-
-fn visuals(theme: &Colors, light: bool) -> egui::Visuals {
-    // Build complete visuals so changing between light and dark never retains old colors.
-    let old = if light {
-        egui::Visuals::light()
-    } else {
-        egui::Visuals::dark()
-    };
-    let shadow_color = egui::Color32::from_black_alpha(if light { 25 } else { 96 });
-    egui::Visuals {
-        hyperlink_color: theme.rosewater,
-        faint_bg_color: theme.surface0,
-        extreme_bg_color: theme.crust,
-        code_bg_color: theme.mantle,
-        warn_fg_color: theme.peach,
-        error_fg_color: theme.maroon,
-        window_fill: theme.base,
-        panel_fill: theme.base,
-        window_stroke: egui::Stroke {
-            color: theme.overlay1,
-            ..old.window_stroke
-        },
-        widgets: style::Widgets {
-            noninteractive: widget_visuals(old.widgets.noninteractive, theme, theme.base),
-            inactive: widget_visuals(old.widgets.inactive, theme, theme.surface0),
-            hovered: widget_visuals(old.widgets.hovered, theme, theme.surface2),
-            active: widget_visuals(old.widgets.active, theme, theme.surface1),
-            open: widget_visuals(old.widgets.open, theme, theme.surface0),
-        },
-        selection: style::Selection {
-            bg_fill: theme.blue.linear_multiply(if light { 0.4 } else { 0.2 }),
-            stroke: egui::Stroke {
-                color: theme.text,
-                ..old.selection.stroke
-            },
-        },
-        window_shadow: epaint::Shadow {
-            color: shadow_color,
-            ..old.window_shadow
-        },
-        popup_shadow: epaint::Shadow {
-            color: shadow_color,
-            ..old.popup_shadow
-        },
-        dark_mode: !light,
-        ..old
-    }
-}
-
 pub(super) fn definition(flavor: Flavor) -> ThemeDefinition {
     let theme = colors(flavor);
     ThemeDefinition {
-        visuals: visuals(&theme, flavor == Flavor::Latte),
+        dark: flavor != Flavor::Latte,
         palette: Palette {
-            canvas: theme.base,
-            panel: theme.mantle,
-            sidebar: theme.crust,
-            input: theme.crust,
-            surface: theme.surface0,
-            hover: theme.surface1,
-            selected: theme.surface0.lerp_to_gamma(theme.mauve, 0.18),
-            border: theme.surface2,
-            text: theme.text,
-            muted: theme.subtext0,
-            subtle: theme.overlay1,
-            accent: theme.mauve,
-            secondary: theme.blue,
-            on_accent: theme.base,
-            warning: theme.yellow,
-            danger: theme.red,
-            backdrop: egui::Color32::from_black_alpha(165),
+            canvas: theme.base.into(),
+            panel: theme.mantle.into(),
+            sidebar: theme.crust.into(),
+            input: theme.crust.into(),
+            surface: theme.surface0.into(),
+            hover: theme.surface1.into(),
+            selected: lerp(theme.surface0, theme.mauve, 0.18).into(),
+            border: theme.surface2.into(),
+            text: theme.text.into(),
+            muted: theme.subtext0.into(),
+            subtle: theme.overlay1.into(),
+            accent: theme.mauve.into(),
+            secondary: theme.blue.into(),
+            on_accent: theme.base.into(),
+            warning: theme.yellow.into(),
+            danger: theme.red.into(),
+            backdrop: black_alpha(165),
         },
     }
 }

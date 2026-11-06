@@ -5,5 +5,5 @@ mod rip;
 mod screen;
 mod state;
 
-pub(crate) use screen::{show, RipperScreen};
+pub(crate) use screen::render;
 pub(crate) use state::RipperFeature;

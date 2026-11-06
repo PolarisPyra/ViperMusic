@@ -1,633 +1,773 @@
 use crate::{
+    app::ViperApp,
     features::{
-        library::state::LibraryFeature,
-        playback::{Playback, RepeatMode},
+        library::{AlbumIndex, Track},
+        playback::RepeatMode,
     },
-    platform::persistence::settings::Settings,
-    shared::{
-        artwork::ArtworkCache,
-        ui::{controls::describe_button, theme, toasts::Toasts},
+    shared::ui::{
+        controls::{
+            describe_button, horizontal_fraction, listen, measure, sz, tooltip, unzoomed,
+            DragPreview,
+        },
+        icons::{icon, inherited_icon, IconName},
+        theme::{self, Palette},
     },
-    workbench::WorkbenchState,
 };
-use eframe::egui;
-use egui::emath::GuiRounding;
-use std::time::Duration;
+use gpui::{
+    div, img, prelude::*, px, relative, AnyElement, ClickEvent, Context, Div, DragMoveEvent,
+    FontWeight, Role, Stateful, Window,
+};
+use std::time::{Duration, Instant};
 
-const PANEL_HEIGHT: f32 = 112.0;
+/// Height of the player bar at 100% zoom.
+pub(in crate::workbench) const PANEL_HEIGHT: f32 = 112.0;
+const ROW_HEIGHT: f32 = 72.0;
+/// Horizontal padding on each side of the bar.
+const PANEL_PADDING: f32 = 24.0;
 const TRACK_ART_SIZE: f32 = 68.0;
-/// Shortest wait between repaints while playing, about 30 fps.
-const MIN_PLAYING_REPAINT: Duration = Duration::from_millis(33);
+/// Width of the time labels on either side of the seek bar.
+const TIME_LABEL_WIDTH: f32 = 38.0;
+/// Shortest wait between repaints while playing, about 60 fps.
+const MIN_PLAYING_REPAINT: Duration = Duration::from_millis(16);
+/// Steps the seek knob is redrawn in, per physical pixel.
+const KNOB_STEPS_PER_PIXEL: f64 = 4.0;
+/// Furthest the seek clock may drift from the decoder before it jumps to it, as after a seek.
+const CLOCK_RESYNC: Duration = Duration::from_millis(300);
+/// Time over which the seek clock catches up with the decoder's position.
+const CLOCK_CORRECTION: Duration = Duration::from_secs(1);
 
-pub(in crate::workbench) fn show(
-    ui: &mut egui::Ui,
-    workbench: &mut WorkbenchState,
-    playback: &mut Playback,
-    library: &mut LibraryFeature,
-    settings: &mut Settings,
-    artwork_cache: &mut ArtworkCache,
-    toasts: &mut Toasts,
-) {
-    let ctx = &ui.ctx().clone();
-    let colors = theme::colors(ctx);
-    egui::Panel::bottom("scrubber-controls")
-        .exact_size(PANEL_HEIGHT)
-        .frame(
-            egui::Frame::new()
-                .fill(colors.panel)
-                .inner_margin(egui::Margin::symmetric(24, 8)),
-        )
-        .show(ui, |ui| {
-            let current = playback.current;
-            let previous_enabled = current.is_some() || playback.has_history();
-            let next_enabled = playback.has_next();
-            let duration = current
-                .and_then(|index| library.model.tracks.get(index))
-                .and_then(|track| track.duration_ms)
-                .map(Duration::from_millis);
+/// The playback position the seek bar draws. The decoder reports its position a whole audio
+/// buffer at a time, so between reports the bar runs on the clock and eases towards each report.
+#[derive(Default)]
+pub(crate) struct SeekClock {
+    /// The position drawn last, and when.
+    anchor: Option<(Duration, Instant)>,
+}
 
-            let row_width = ui.available_width();
-            let (row_rect, _) =
-                ui.allocate_exact_size(egui::vec2(row_width, 72.0), egui::Sense::hover());
-            let volume_width = if row_width < 862.0 { 150.0 } else { 176.0 };
-            let control_spacing =
-                ((row_width * 0.5 - volume_width - 50.0 - 17.0 - 8.0) / 2.0).clamp(54.0, 68.0);
-            let controls_width = control_spacing * 4.0 + 34.0;
-            let max_info_width = ((row_width - controls_width) * 0.5 - 16.0).max(0.0);
-            let info_rect = egui::Rect::from_min_size(
-                row_rect.min,
-                egui::vec2(
-                    (row_width * 0.4).min(440.0).min(max_info_width),
-                    row_rect.height(),
-                ),
-            );
-            let mut info_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(info_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            let open_album = show_track_info(ctx, &mut info_ui, library, artwork_cache, current);
+impl SeekClock {
+    /// Advance the clock and return the position to draw.
+    ///
+    /// # Arguments
+    /// * `reported` - The decoder's position.
+    /// * `playing` - Whether playback is running; a paused clock shows `reported` as it is.
+    ///
+    /// # Returns
+    /// The position to draw.
+    fn position(&mut self, reported: Duration, playing: bool) -> Duration {
+        let now = Instant::now();
+        let Some((drawn, at)) = self.anchor.filter(|_| playing) else {
+            self.anchor = playing.then_some((reported, now));
+            return reported;
+        };
+        let elapsed = now.duration_since(at);
+        let estimate = drawn + elapsed;
+        let error = reported.as_secs_f64() - estimate.as_secs_f64();
+        let position = if error.abs() > CLOCK_RESYNC.as_secs_f64() {
+            reported
+        } else {
+            let weight = (elapsed.as_secs_f64() / CLOCK_CORRECTION.as_secs_f64()).min(1.0);
+            Duration::from_secs_f64((estimate.as_secs_f64() + error * weight).max(0.0))
+        };
+        self.anchor = Some((position, now));
+        position
+    }
+}
 
-            // Anchor the controls to the full bar rect; column sizing otherwise
-            // shifts them when the track-info column has no content.
-            let controls_rect = egui::Rect::from_center_size(
-                row_rect.center(),
-                egui::vec2(controls_width, row_rect.height()),
-            );
-            let shuffle_rect = egui::Rect::from_center_size(
-                egui::pos2(
-                    row_rect.center().x - control_spacing * 2.0,
-                    controls_rect.center().y,
-                ),
-                egui::vec2(34.0, 38.0),
-            );
-            let previous_rect = egui::Rect::from_center_size(
-                egui::pos2(
-                    row_rect.center().x - control_spacing,
-                    controls_rect.center().y,
-                ),
-                egui::vec2(40.0, 44.0),
-            );
-            let play_rect =
-                egui::Rect::from_center_size(controls_rect.center(), egui::vec2(50.0, 50.0));
-            let next_rect = egui::Rect::from_center_size(
-                egui::pos2(
-                    row_rect.center().x + control_spacing,
-                    controls_rect.center().y,
-                ),
-                egui::vec2(40.0, 44.0),
-            );
-            let repeat_rect = egui::Rect::from_center_size(
-                egui::pos2(
-                    row_rect.center().x + control_spacing * 2.0,
-                    controls_rect.center().y,
-                ),
-                egui::vec2(34.0, 38.0),
-            );
-            let shuffle = transport_icon_button(
-                ui,
-                shuffle_rect,
+/// Marks a drag of the seek bar's knob.
+struct SeekDrag;
+/// Marks a drag of the volume slider.
+struct VolumeDrag;
+
+/// What the transport needs to know about playback for one frame.
+struct Transport {
+    current: Option<usize>,
+    playing: bool,
+    shuffle: bool,
+    repeat: RepeatMode,
+    previous_enabled: bool,
+    next_enabled: bool,
+    play_enabled: bool,
+    position: Duration,
+}
+
+/// Draw the playback bar along the bottom of the window.
+///
+/// # Arguments
+/// * `app` - Application holding playback and the library.
+/// * `window` - Window being drawn, whose width lays out the bar.
+/// * `cx` - Application entity context.
+///
+/// # Returns
+/// The playback bar element.
+pub(in crate::workbench) fn render(
+    app: &mut ViperApp,
+    window: &mut Window,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    finish_drags(app, cx);
+    let colors = theme::colors(cx);
+    let mut transport = {
+        let playback = app.playback();
+        let library = &app.library;
+        let current = playback.current;
+        let can_start = library
+            .view
+            .selected_album
+            .and_then(|index| library.model.albums.get(index))
+            .is_some_and(|album| !album.tracks.is_empty())
+            || playback.has_next()
+            || (playback.shuffle_enabled && !library.model.tracks.is_empty());
+        Transport {
+            current,
+            playing: playback.is_playing(),
+            shuffle: playback.shuffle_enabled,
+            repeat: playback.repeat_mode,
+            previous_enabled: current.is_some() || playback.has_history(),
+            next_enabled: playback.has_next(),
+            play_enabled: current.is_some() || can_start,
+            position: playback.position(),
+        }
+    };
+    transport.position = app
+        .ui
+        .seek_clock
+        .position(transport.position, transport.playing);
+    let track = transport
+        .current
+        .and_then(|index| app.library.model.tracks.get(index))
+        .cloned();
+    let duration = track
+        .as_ref()
+        .and_then(|track| track.duration_ms)
+        .map(Duration::from_millis);
+
+    let row_width = (unzoomed(window.viewport_size().width, window) - PANEL_PADDING * 2.0).max(0.0);
+    let volume_width = if row_width < 862.0 { 150.0 } else { 176.0 };
+    let spacing = ((row_width * 0.5 - volume_width - 50.0 - 17.0 - 8.0) / 2.0).clamp(54.0, 68.0);
+    let controls_width = spacing * 4.0 + 34.0;
+    let max_info_width = ((row_width - controls_width) * 0.5 - 16.0).max(0.0);
+    let info_width = (row_width * 0.4).min(440.0).min(max_info_width);
+    let center = row_width * 0.5;
+    let volume_left = row_width - volume_width - 90.0;
+
+    let mut row = div()
+        .relative()
+        .flex_none()
+        .w_full()
+        .h(sz(ROW_HEIGHT))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .h_full()
+                .w(sz(info_width))
+                .children(track_info(app, transport.current, cx)),
+        );
+
+    let shuffle_tooltip = if transport.shuffle {
+        "Shuffle: On"
+    } else {
+        "Shuffle: Off"
+    };
+    row = row.child(
+        place(
+            transport_button(
                 "player-shuffle",
-                egui_phosphor::regular::SHUFFLE,
-                if playback.shuffle_enabled {
-                    "Shuffle: On"
-                } else {
-                    "Shuffle: Off"
-                },
-                playback.shuffle_enabled,
+                IconName::Shuffle,
+                20.0,
+                shuffle_tooltip,
+                transport.shuffle,
                 true,
-            );
-            let previous = ui.interact(
-                previous_rect,
-                egui::Id::new("player-previous"),
-                if previous_enabled {
-                    egui::Sense::click()
-                } else {
-                    egui::Sense::hover()
-                },
-            );
-            let can_start = playback.current.is_some()
-                || library
-                    .view
-                    .selected_album
-                    .and_then(|index| library.model.albums.get(index))
-                    .is_some_and(|album| !album.tracks.is_empty())
-                || playback.has_next()
-                || (playback.shuffle_enabled && !library.model.tracks.is_empty());
-            let play_enabled = playback.current.is_some() || can_start;
-            let play = ui.interact(
-                play_rect,
-                egui::Id::new("player-play-pause"),
-                if play_enabled {
-                    egui::Sense::click()
-                } else {
-                    egui::Sense::hover()
-                },
-            );
-            let next = ui.interact(
-                next_rect,
-                egui::Id::new("player-next"),
-                if next_enabled {
-                    egui::Sense::click()
-                } else {
-                    egui::Sense::hover()
-                },
-            );
-            let (repeat_id, repeat_icon, repeat_tooltip) = match playback.repeat_mode {
-                RepeatMode::Off => (
-                    "player-repeat-off",
-                    egui_phosphor::regular::REPEAT,
-                    "Repeat: Off",
-                ),
-                RepeatMode::All => (
-                    "player-repeat-all",
-                    egui_phosphor::regular::REPEAT,
-                    "Repeat: Queue",
-                ),
-                RepeatMode::One => (
-                    "player-repeat-one",
-                    egui_phosphor::regular::REPEAT_ONCE,
-                    "Repeat: Track",
-                ),
-            };
-            let repeat = transport_icon_button(
-                ui,
-                repeat_rect,
-                repeat_id,
+                colors,
+            ),
+            center - spacing * 2.0,
+            (34.0, 38.0),
+        )
+        .on_click(cx.listener(|app, _, _, cx| {
+            let tracks = std::sync::Arc::clone(&app.library.model.tracks);
+            app.playback().toggle_shuffle(&tracks);
+            cx.notify();
+        })),
+    );
+    row = row.child(
+        place(
+            transport_button(
+                "player-previous",
+                IconName::SkipBack,
+                28.0,
+                "Previous track",
+                false,
+                transport.previous_enabled,
+                colors,
+            ),
+            center - spacing,
+            (40.0, 44.0),
+        )
+        .when(transport.previous_enabled, |button| {
+            button.on_click(cx.listener(|app, _, _, cx| {
+                app.playback().previous(&app.library.model.tracks);
+                cx.notify();
+            }))
+        }),
+    );
+    row = row.child(play_button(&transport, center, colors, cx));
+    row = row.child(
+        place(
+            transport_button(
+                "player-next",
+                IconName::SkipForward,
+                28.0,
+                "Next track",
+                false,
+                transport.next_enabled,
+                colors,
+            ),
+            center + spacing,
+            (40.0, 44.0),
+        )
+        .when(transport.next_enabled, |button| {
+            button.on_click(cx.listener(|app, _, _, cx| {
+                app.playback().skip_next(&app.library.model.tracks);
+                cx.notify();
+            }))
+        }),
+    );
+    let (repeat_icon, repeat_tooltip) = match transport.repeat {
+        RepeatMode::Off => (IconName::Repeat, "Repeat: Off"),
+        RepeatMode::All => (IconName::Repeat, "Repeat: Queue"),
+        RepeatMode::One => (IconName::Repeat1, "Repeat: Track"),
+    };
+    row = row.child(
+        place(
+            transport_button(
+                "player-repeat",
                 repeat_icon,
+                20.0,
                 repeat_tooltip,
-                playback.repeat_mode != RepeatMode::Off,
+                transport.repeat != RepeatMode::Off,
                 true,
-            );
-            ui.painter().text(
-                previous_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::SKIP_BACK,
-                theme::icon_font(28.0),
-                if previous.hovered() && previous_enabled {
-                    colors.text
-                } else {
-                    colors.muted
-                },
-            );
-            ui.painter().circle_filled(
-                play_rect.center(),
-                23.0,
-                if playback.current.is_some() {
+                colors,
+            ),
+            center + spacing * 2.0,
+            (34.0, 38.0),
+        )
+        .on_click(cx.listener(|app, event: &ClickEvent, _, cx| {
+            let mut playback = app.playback();
+            if event.click_count() >= 2 {
+                playback.set_repeat_mode(RepeatMode::One);
+            } else {
+                playback.toggle_repeat_all();
+            }
+            drop(playback);
+            cx.notify();
+        })),
+    );
+
+    if let Some(track) = &track {
+        let left = center + controls_width * 0.5 + 14.0;
+        let right = volume_left - 10.0;
+        row = row.children(audio_chip(track, left, right, row_width, colors));
+    }
+    row = row.child(volume_control(app, volume_left, volume_width, colors, cx));
+    let has_tracks = !app.library.model.tracks.is_empty();
+    row = row.child(
+        place(
+            transport_button(
+                "player-queue",
+                IconName::ListMusic,
+                20.0,
+                "Queue",
+                app.workbench.show_queue,
+                true,
+                colors,
+            ),
+            row_width - 66.0,
+            (34.0, 38.0),
+        )
+        .on_click(cx.listener(|app, _, _, cx| {
+            app.workbench.show_queue = !app.workbench.show_queue;
+            cx.notify();
+        })),
+    );
+    row = row.child(
+        place(
+            transport_button(
+                "player-random-track",
+                IconName::Dice5,
+                20.0,
+                "Play random song",
+                false,
+                has_tracks,
+                colors,
+            ),
+            row_width - 24.0,
+            (34.0, 38.0),
+        )
+        .when(has_tracks, |button| {
+            button.on_click(cx.listener(|app, _, _, cx| {
+                app.playback().play_random_track(&app.library.model.tracks);
+                cx.notify();
+            }))
+        }),
+    );
+
+    let seek = seek_row(app, &transport, duration, window.scale_factor(), colors, cx);
+    div()
+        .id("scrubber-controls")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .h(sz(PANEL_HEIGHT))
+        .px(sz(PANEL_PADDING))
+        .py(sz(8.0))
+        .bg(colors.panel)
+        .border_t_1()
+        .border_color(colors.border)
+        .child(row)
+        .child(seek)
+        .into_any_element()
+}
+
+/// Apply a seek or volume drag that has just been let go.
+fn finish_drags(app: &mut ViperApp, cx: &Context<ViperApp>) {
+    if cx.has_active_drag() {
+        return;
+    }
+    if let Some(fraction) = app.ui.seek_preview.take() {
+        seek_to(app, fraction);
+    }
+    if std::mem::take(&mut app.ui.volume_dragging) {
+        app.save_settings();
+    }
+}
+
+/// Seek the current track to `fraction` of its length.
+fn seek_to(app: &mut ViperApp, fraction: f32) {
+    let mut playback = app.playback();
+    let Some(duration) = playback
+        .current
+        .and_then(|index| app.library.model.tracks.get(index))
+        .and_then(|track| track.duration_ms)
+        .map(Duration::from_millis)
+    else {
+        return;
+    };
+    playback.seek(&app.library.model.tracks, duration.mul_f32(fraction));
+}
+
+/// Set the volume from a position along the slider.
+fn set_volume(app: &mut ViperApp, fraction: f32) {
+    app.settings.volume = (fraction * 100.0).round() as u8;
+    app.playback().set_volume(app.settings.volume);
+}
+
+/// Position `element` of `size` so it is centered at `x` across the row.
+fn place(element: Stateful<Div>, x: f32, size: (f32, f32)) -> Stateful<Div> {
+    element
+        .absolute()
+        .left(sz(x - size.0 * 0.5))
+        .top(sz((ROW_HEIGHT - size.1) * 0.5))
+        .w(sz(size.0))
+        .h(sz(size.1))
+}
+
+/// A transport icon that lights up while its mode is on.
+fn transport_button(
+    id: &'static str,
+    name: IconName,
+    size: f32,
+    description: &'static str,
+    active: bool,
+    enabled: bool,
+    colors: Palette,
+) -> Stateful<Div> {
+    let tint = if active { colors.accent } else { colors.muted };
+    let hovered = if active { colors.accent } else { colors.text };
+    describe_button(div().id(id), description)
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(tooltip(description))
+        .text_color(tint)
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.text_color(hovered))
+        })
+        .child(inherited_icon(name, size))
+}
+
+/// The round play and pause button in the middle of the bar.
+fn play_button(
+    transport: &Transport,
+    center: f32,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> Stateful<Div> {
+    let has_current = transport.current.is_some();
+    let hover_text = if !has_current && !transport.play_enabled {
+        "Select an album or turn on Shuffle to play"
+    } else if transport.playing {
+        "Pause"
+    } else if has_current {
+        "Resume"
+    } else {
+        "Play"
+    };
+    let description = if transport.playing { "Pause" } else { "Play" };
+    let button = describe_button(div().id("player-play-pause"), description)
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(tooltip(hover_text))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(sz(46.0))
+                .rounded_full()
+                .bg(if has_current {
                     colors.accent
                 } else {
                     colors.surface
-                },
-            );
-            let icon = if playback.is_playing() {
-                egui_phosphor::regular::PAUSE
-            } else {
-                egui_phosphor::regular::PLAY
-            };
-            ui.painter().text(
-                play_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                icon,
-                theme::icon_font(34.0),
-                if playback.current.is_some() {
-                    colors.on_accent
-                } else {
-                    colors.muted
-                },
-            );
-            ui.painter().text(
-                next_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::SKIP_FORWARD,
-                theme::icon_font(28.0),
-                if next.hovered() && next_enabled {
-                    colors.text
-                } else {
-                    colors.muted
-                },
-            );
-            describe_button(&previous, "Previous track");
-            describe_button(&next, "Next track");
-            describe_button(
-                &play,
-                if playback.is_playing() {
-                    "Pause"
-                } else {
-                    "Play"
-                },
-            );
-            let previous = previous.on_hover_text("Previous track");
-            let play = play.on_hover_text(if playback.current.is_none() && !play_enabled {
-                "Select an album or turn on Shuffle to play"
-            } else if playback.is_playing() {
-                "Pause"
-            } else if playback.current.is_some() {
-                "Resume"
-            } else {
-                "Play"
-            });
-            let next = next.on_hover_text("Next track");
-            if shuffle.clicked() {
-                playback.toggle_shuffle(&library.model.tracks);
-            }
-            if repeat.double_clicked() {
-                playback.set_repeat_mode(RepeatMode::One);
-            } else if repeat.clicked() {
-                playback.toggle_repeat_all();
-            }
-            if previous.clicked() {
-                playback.previous(&library.model.tracks);
-            }
-            if play.clicked() {
-                playback.play_pause(library);
-            }
-            if next.clicked() {
-                playback.skip_next(&library.model.tracks);
-            }
-
-            let volume_area = egui::Rect::from_min_size(
-                egui::pos2(
-                    row_rect.right() - volume_width - 90.0,
-                    row_rect.center().y - 15.0,
-                ),
-                egui::vec2(volume_width, 30.0),
-            );
-            let queue_rect = egui::Rect::from_center_size(
-                egui::pos2(row_rect.right() - 66.0, row_rect.center().y),
-                egui::vec2(34.0, 38.0),
-            );
-            let random_rect = egui::Rect::from_center_size(
-                egui::pos2(row_rect.right() - 24.0, row_rect.center().y),
-                egui::vec2(34.0, 38.0),
-            );
-            let random = transport_icon_button(
-                ui,
-                random_rect,
-                "player-random-track",
-                egui_phosphor::regular::DICE_FIVE,
-                "Play random song",
-                false,
-                !library.model.tracks.is_empty(),
-            );
-            if random.clicked() {
-                playback.play_random_track(&library.model.tracks);
-            }
-            let queue = transport_icon_button(
-                ui,
-                queue_rect,
-                "player-queue",
-                egui_phosphor::regular::QUEUE,
-                "Queue",
-                workbench.show_queue,
-                true,
-            );
-            if queue.clicked() {
-                workbench.show_queue = !workbench.show_queue;
-            }
-            if let Some(track) = current.and_then(|index| library.model.tracks.get(index)) {
-                show_audio_chips(ui, controls_rect, volume_area, track);
-            }
-
-            let volume_icon = egui::Rect::from_min_size(
-                volume_area.min + egui::vec2(0.0, 4.0),
-                egui::vec2(22.0, 22.0),
-            );
-            let volume_glyph = match settings.volume {
-                0 => egui_phosphor::regular::SPEAKER_X,
-                1..=35 => egui_phosphor::regular::SPEAKER_LOW,
-                36..=u8::MAX => egui_phosphor::regular::SPEAKER_HIGH,
-            };
-            ui.painter().text(
-                volume_icon.center(),
-                egui::Align2::CENTER_CENTER,
-                volume_glyph,
-                theme::icon_font(22.0),
-                colors.muted,
-            );
-            let volume_track_area = egui::Rect::from_min_max(
-                volume_area.min + egui::vec2(30.0, 0.0),
-                volume_area.max - egui::vec2(46.0, 0.0),
-            );
-            let volume_response = ui.interact(
-                volume_track_area,
-                egui::Id::new("player-volume-slider"),
-                egui::Sense::click_and_drag(),
-            );
-            volume_response.widget_info(|| {
-                egui::WidgetInfo::slider(true, f64::from(settings.volume), "Volume")
-            });
-            let volume_track = egui::Rect::from_center_size(
-                volume_track_area.center(),
-                egui::vec2(volume_track_area.width(), 3.0),
-            );
-            ui.painter().rect_filled(volume_track, 2.0, colors.surface);
-            let volume_fraction = settings.volume as f32 / 100.0;
-            let volume_x = volume_track.left() + volume_track.width() * volume_fraction;
-            let volume_thumb_center = egui::pos2(
-                volume_x.round_to_pixel_center(ui.pixels_per_point()),
-                volume_track.center().y,
-            );
-            ui.painter().rect_filled(
-                egui::Rect::from_min_max(
-                    volume_track.min,
-                    egui::pos2(volume_x, volume_track.bottom()),
-                ),
-                2.0,
-                colors.accent,
-            );
-            ui.painter().rect_filled(
-                egui::Rect::from_center_size(volume_thumb_center, egui::vec2(6.0, 12.0)),
-                3.0,
-                colors.text,
-            );
-            if volume_response.clicked() || volume_response.dragged() {
-                if let Some(pointer) = volume_response.interact_pointer_pos() {
-                    let fraction =
-                        ((pointer.x - volume_track.left()) / volume_track.width()).clamp(0.0, 1.0);
-                    settings.volume = (fraction * 100.0).round() as u8;
-                }
-            }
-            if volume_response.dragged() {
-                playback.set_volume(settings.volume);
-            }
-            if volume_response.clicked() || volume_response.drag_stopped() {
-                playback.set_volume(settings.volume);
-                if let Err(save_error) = settings.save() {
-                    toasts.push(format!("Could not save settings: {save_error}"));
-                }
-            }
-
-            let max_seconds = duration.map_or(0.0, |duration| duration.as_secs_f64());
-            // Seconds until the time label or the knob next changes.
-            let mut next_change = 1.0;
-            ui.horizontal(|ui| {
-                let (position_label, _) =
-                    ui.allocate_exact_size(egui::vec2(38.0, 14.0), egui::Sense::hover());
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2((ui.available_width() - 46.0).max(1.0), 14.0),
-                    if max_seconds > 0.0 {
-                        egui::Sense::click_and_drag()
+                })
+                .child(icon(
+                    if transport.playing {
+                        IconName::Pause
                     } else {
-                        egui::Sense::hover()
+                        IconName::Play
                     },
-                );
-                let track_rect =
-                    egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 3.0));
-                let seconds_at = |pointer: egui::Pos2| {
-                    max_seconds
-                        * f64::from(
-                            ((pointer.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0),
-                        )
-                };
-                // Dragging previews the target time; the decoder seeks once on release.
-                let preview_id = response.id.with("seek-preview");
-                if response.dragged() {
-                    if let Some(pointer) = response.interact_pointer_pos() {
-                        ui.data_mut(|data| data.insert_temp(preview_id, seconds_at(pointer)));
-                    }
-                }
-                let preview = ui.data(|data| data.get_temp::<f64>(preview_id));
-                if response.drag_stopped() {
-                    ui.data_mut(|data| data.remove::<f64>(preview_id));
-                    if let Some(target) = preview {
-                        playback.seek(&library.model.tracks, Duration::from_secs_f64(target));
-                    }
-                } else if response.clicked() {
-                    if let Some(pointer) = response.interact_pointer_pos() {
-                        playback.seek(
-                            &library.model.tracks,
-                            Duration::from_secs_f64(seconds_at(pointer)),
-                        );
-                    }
-                }
-                let shown = preview.map_or_else(|| playback.position(), Duration::from_secs_f64);
-                ui.painter().text(
-                    egui::pos2(position_label.left(), position_label.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format_time(shown),
-                    egui::FontId::proportional(11.0),
-                    colors.subtle,
-                );
-                ui.painter().rect_filled(track_rect, 2.0, colors.surface);
-                let fraction = if max_seconds > 0.0 {
-                    (shown.as_secs_f64() / max_seconds).clamp(0.0, 1.0) as f32
-                } else {
-                    0.0
-                };
-                // Repaint when the time label's second or the knob's pixel next changes, not at a fixed
-                // rate: a long track moves the knob a pixel only every second or so.
-                let position = shown.as_secs_f64();
-                next_change = 1.0 - position.fract();
-                let pixels = f64::from(track_rect.width() * ui.pixels_per_point());
-                if max_seconds > 0.0 && pixels > 0.0 {
-                    let seconds_per_pixel = max_seconds / pixels;
-                    next_change = next_change.min(seconds_per_pixel - position % seconds_per_pixel);
-                }
-                // Fill and knob share one pixel-snapped edge so they never drift apart by a pixel.
-                let knob_x = (track_rect.left() + track_rect.width() * fraction)
-                    .round_to_pixels(ui.pixels_per_point());
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_max(
-                        track_rect.min,
-                        egui::pos2(knob_x, track_rect.bottom()),
-                    ),
-                    2.0,
-                    colors.accent,
-                );
-                if current.is_some() && duration.is_some() {
-                    let thumb_center = egui::pos2(knob_x, rect.center().y);
-                    ui.painter().rect_filled(
-                        egui::Rect::from_center_size(thumb_center, egui::vec2(6.0, 12.0)),
-                        3.0,
-                        colors.text,
-                    );
-                }
-                response.widget_info(|| {
-                    egui::WidgetInfo::slider(
-                        max_seconds > 0.0,
-                        shown.as_secs_f64(),
-                        "Playback position",
-                    )
-                });
-                if max_seconds > 0.0 {
-                    if let Some(pointer) = response.hover_pos() {
-                        response.on_hover_text_at_pointer(format_time(Duration::from_secs_f64(
-                            seconds_at(pointer),
-                        )));
-                    }
-                }
-
-                let (duration_label, _) =
-                    ui.allocate_exact_size(egui::vec2(38.0, 14.0), egui::Sense::hover());
-                ui.painter().text(
-                    egui::pos2(duration_label.left(), duration_label.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    duration.map(format_time).unwrap_or_default(),
-                    egui::FontId::proportional(11.0),
-                    colors.subtle,
-                );
-            });
-            ui.painter().text(
-                egui::pos2(volume_area.right() - 24.0, volume_area.center().y),
-                egui::Align2::CENTER_CENTER,
-                format!("{}%", settings.volume),
-                egui::FontId::proportional(11.0),
-                colors.muted,
-            );
-            if playback.is_playing() {
-                ctx.request_repaint_after(
-                    Duration::from_secs_f64(next_change).max(MIN_PLAYING_REPAINT),
-                );
-            }
-            if let Some(album_index) = open_album {
-                workbench.open_album(&mut library.view, album_index);
-            }
-        });
+                    24.0,
+                    if has_current {
+                        colors.on_accent
+                    } else {
+                        colors.muted
+                    },
+                )),
+        );
+    place(button, center, (50.0, 50.0)).when(transport.play_enabled, |button| {
+        button
+            .cursor_pointer()
+            .on_click(cx.listener(|app, _, _, cx| {
+                app.playback().play_pause(&app.library);
+                cx.notify();
+            }))
+    })
 }
 
-fn transport_icon_button(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    id: &'static str,
-    icon: &str,
-    tooltip: &str,
-    active: bool,
-    enabled: bool,
-) -> egui::Response {
-    let colors = theme::colors(ui.ctx());
-    let response = ui.interact(
-        rect,
-        egui::Id::new(id),
-        if enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-    describe_button(&response, tooltip);
-    let color = if active {
-        colors.accent
-    } else if response.hovered() && enabled {
-        colors.text
-    } else {
-        colors.muted
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        theme::icon_font(20.0),
-        color,
-    );
-    response.on_hover_text(tooltip)
-}
-
-/// Draw the current track's artwork, title, and artist.
-///
-/// # Returns
-/// The album to open when the user clicked the track details.
-fn show_track_info(
-    ctx: &egui::Context,
-    ui: &mut egui::Ui,
-    library: &LibraryFeature,
-    artwork_cache: &mut ArtworkCache,
+/// The current track's artwork, title and artist, which open its album when clicked.
+fn track_info(
+    app: &mut ViperApp,
     current: Option<usize>,
-) -> Option<usize> {
-    let colors = theme::colors(ui.ctx());
+    cx: &mut Context<ViperApp>,
+) -> Option<AnyElement> {
+    let colors = theme::colors(cx);
     let index = current?;
-    let track = library.model.tracks.get(index)?;
-    let album_index = library
+    let track = app.library.model.tracks.get(index)?;
+    let (title, artist) = (track.title.clone(), track.artist.clone());
+    let album_index = app
+        .library
         .model
         .track_album
         .get(index)
         .copied()
         .flatten()
-        .map(crate::features::library::AlbumIndex::get);
+        .map(AlbumIndex::get);
     let texture = album_index.and_then(|album_index| {
-        let bytes = library.model.albums.get(album_index)?.art.as_ref()?;
-        artwork_cache.texture(ctx, album_index, bytes)
+        let bytes = app.library.model.albums.get(album_index)?.art.clone()?;
+        app.artwork_cache.texture(&app.repaint, album_index, &bytes)
     });
-    let start = ui.cursor().min;
-    let cover = ui
-        .allocate_space(egui::vec2(TRACK_ART_SIZE, TRACK_ART_SIZE))
-        .1;
-    if let Some(texture) = texture {
-        ui.painter().image(
-            texture.id(),
-            cover,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-    }
-    ui.add_space(9.0);
-    let text = ui.vertical(|ui| {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(&track.title)
-                    .size(15.0)
-                    .strong()
-                    .color(colors.text),
-            )
-            .truncate(),
-        );
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(&track.artist)
-                    .size(13.0)
-                    .color(colors.muted),
-            )
-            .truncate(),
-        );
-    });
-    let album_index = album_index?;
-    let area = egui::Rect::from_min_max(start, cover.max.max(text.response.rect.max));
-    let response = ui
-        .interact(
-            area,
-            ui.id().with("now-playing-album"),
-            egui::Sense::click(),
+    let cover = div()
+        .flex_none()
+        .size(sz(TRACK_ART_SIZE))
+        .children(texture.map(|texture| img(texture).size_full()));
+    let text = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_size(sz(15.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(colors.text)
+                .truncate()
+                .child(title),
         )
-        .on_hover_text("Go to album");
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Go to playing album")
-    });
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    response.clicked().then_some(album_index)
+        .child(
+            div()
+                .text_size(sz(13.0))
+                .text_color(colors.muted)
+                .truncate()
+                .child(artist),
+        );
+    let info = div()
+        .id("now-playing-album")
+        .flex()
+        .items_center()
+        .gap(sz(9.0))
+        .h_full()
+        .max_w_full()
+        .child(cover)
+        .child(text);
+    Some(match album_index {
+        Some(album_index) => describe_button(info, "Go to playing album")
+            .cursor_pointer()
+            .tooltip(tooltip("Go to album"))
+            .on_click(cx.listener(move |app, _, _, cx| {
+                app.workbench.open_album(&mut app.library.view, album_index);
+                cx.notify();
+            }))
+            .into_any_element(),
+        None => info.into_any_element(),
+    })
 }
 
-fn show_audio_chips(
-    ui: &mut egui::Ui,
-    controls_rect: egui::Rect,
-    volume_area: egui::Rect,
-    track: &crate::features::library::Track,
-) {
-    let colors = theme::colors(ui.ctx());
-    let left = controls_rect.right() + 14.0;
-    let right = volume_area.left() - 10.0;
+/// The volume icon, slider and percentage, which save the volume once it is set.
+fn volume_control(
+    app: &ViperApp,
+    left: f32,
+    width: f32,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let volume = app.settings.volume;
+    let volume_icon = match volume {
+        0 => IconName::VolumeX,
+        1..=35 => IconName::Volume1,
+        36..=u8::MAX => IconName::Volume2,
+    };
+    let fraction = f32::from(volume) / 100.0;
+    let bounds = std::rc::Rc::clone(&app.ui.volume_bounds);
+    let slider = div()
+        .id("player-volume-slider")
+        .role(Role::Slider)
+        .aria_label("Volume")
+        .relative()
+        .flex_1()
+        .h_full()
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .child(measure(&app.ui.volume_bounds))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(3.0))
+                .rounded(px(2.0))
+                .bg(colors.surface)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(fraction))
+                        .rounded(px(2.0))
+                        .bg(colors.accent),
+                )
+                .child(knob(fraction, colors)),
+        )
+        .on_click(cx.listener(move |app, event: &ClickEvent, _, cx| {
+            set_volume(app, horizontal_fraction(bounds.get(), event.position()));
+            app.save_settings();
+            cx.notify();
+        }))
+        .on_drag(VolumeDrag, |_, _, _, cx| cx.new(|_| DragPreview(None)))
+        .on_drag_move(listen(
+            cx,
+            |app, event: &DragMoveEvent<VolumeDrag>, _, _| {
+                set_volume(app, horizontal_fraction(event.bounds, event.event.position));
+                app.ui.volume_dragging = true;
+            },
+        ));
+    div()
+        .absolute()
+        .left(sz(left))
+        .top(sz(ROW_HEIGHT * 0.5 - 15.0))
+        .w(sz(width))
+        .h(sz(30.0))
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .flex_none()
+                .w(sz(30.0))
+                .child(icon(volume_icon, 22.0, colors.muted)),
+        )
+        .child(slider)
+        .child(
+            div()
+                .flex_none()
+                .w(sz(46.0))
+                .flex()
+                .justify_center()
+                .text_size(sz(11.0))
+                .text_color(colors.muted)
+                .child(format!("{volume}%")),
+        )
+        .into_any_element()
+}
+
+/// The slider knob at `fraction` along its track.
+fn knob(fraction: f32, colors: Palette) -> Div {
+    div()
+        .absolute()
+        .top(px(-4.5))
+        .left(relative(fraction))
+        .ml(px(-3.0))
+        .w(px(6.0))
+        .h(px(12.0))
+        .rounded(px(3.0))
+        .bg(colors.text)
+}
+
+/// The seek bar with the elapsed time and the track length on either side.
+fn seek_row(
+    app: &mut ViperApp,
+    transport: &Transport,
+    duration: Option<Duration>,
+    scale_factor: f32,
+    colors: Palette,
+    cx: &mut Context<ViperApp>,
+) -> AnyElement {
+    let max_seconds = duration.map_or(0.0, |duration| duration.as_secs_f64());
+    let can_seek = max_seconds > 0.0;
+    // Dragging previews the target time; the decoder seeks once on release.
+    let shown = app
+        .ui
+        .seek_preview
+        .filter(|_| can_seek)
+        .map_or(transport.position, |fraction| {
+            Duration::from_secs_f64(max_seconds * f64::from(fraction))
+        });
+    let fraction = if can_seek {
+        (shown.as_secs_f64() / max_seconds).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    if transport.playing {
+        // Repaint when the time label's second changes or the knob next moves a fraction of a
+        // pixel, not at a fixed rate: a long track moves the knob a pixel only every second or so.
+        let position = shown.as_secs_f64();
+        let mut next_change = 1.0 - position.fract();
+        let pixels = f64::from(f32::from(app.ui.seek_bounds.get().size.width) * scale_factor);
+        if can_seek && pixels > 0.0 {
+            let seconds_per_step = max_seconds / (pixels * KNOB_STEPS_PER_PIXEL);
+            next_change = next_change.min(seconds_per_step - position % seconds_per_step);
+        }
+        app.repaint
+            .request_repaint_after(Duration::from_secs_f64(next_change).max(MIN_PLAYING_REPAINT));
+    }
+    let hover = app.ui.seek_hover.filter(|_| can_seek);
+    let bounds = std::rc::Rc::clone(&app.ui.seek_bounds);
+    let hover_bounds = std::rc::Rc::clone(&app.ui.seek_bounds);
+    let time_label = |text: String| {
+        div()
+            .flex_none()
+            .w(sz(TIME_LABEL_WIDTH))
+            .text_size(sz(11.0))
+            .text_color(colors.subtle)
+            .child(text)
+    };
+    let bar = div()
+        .id("player-seek-bar")
+        .role(Role::Slider)
+        .aria_label("Playback position")
+        .relative()
+        .flex_1()
+        .h(sz(14.0))
+        .flex()
+        .items_center()
+        .child(measure(&app.ui.seek_bounds))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(3.0))
+                .rounded(px(2.0))
+                .bg(colors.surface)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(fraction))
+                        .rounded(px(2.0))
+                        .bg(colors.accent),
+                )
+                .when(transport.current.is_some() && duration.is_some(), |track| {
+                    track.child(knob(fraction, colors))
+                }),
+        )
+        .children(hover.map(|at| {
+            div()
+                .absolute()
+                .bottom(sz(18.0))
+                .left(relative(at))
+                .ml(sz(-20.0))
+                .w(sz(40.0))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .px(sz(6.0))
+                        .py(sz(2.0))
+                        .bg(colors.surface)
+                        .border_1()
+                        .border_color(colors.border)
+                        .rounded(sz(4.0))
+                        .text_size(sz(11.0))
+                        .text_color(colors.text)
+                        .child(format_time(Duration::from_secs_f64(
+                            max_seconds * f64::from(at),
+                        ))),
+                )
+        }))
+        .when(can_seek, |bar| {
+            bar.cursor_pointer()
+                .on_click(cx.listener(move |app, event: &ClickEvent, _, cx| {
+                    seek_to(app, horizontal_fraction(bounds.get(), event.position()));
+                    cx.notify();
+                }))
+                .on_mouse_move(
+                    cx.listener(move |app, event: &gpui::MouseMoveEvent, _, cx| {
+                        app.ui.seek_hover =
+                            Some(horizontal_fraction(hover_bounds.get(), event.position));
+                        cx.notify();
+                    }),
+                )
+                .on_hover(cx.listener(|app, hovered: &bool, _, cx| {
+                    if !hovered {
+                        app.ui.seek_hover = None;
+                        cx.notify();
+                    }
+                }))
+                .on_drag(SeekDrag, |_, _, _, cx| cx.new(|_| DragPreview(None)))
+                .on_drag_move(listen(cx, |app, event: &DragMoveEvent<SeekDrag>, _, _| {
+                    app.ui.seek_preview =
+                        Some(horizontal_fraction(event.bounds, event.event.position));
+                }))
+        });
+    div()
+        .flex()
+        .items_center()
+        .gap(sz(8.0))
+        .w_full()
+        .child(time_label(format_time(shown)))
+        .child(bar)
+        .child(time_label(duration.map(format_time).unwrap_or_default()))
+        .into_any_element()
+}
+
+/// File type, bitrate and resolution of the playing track between the controls and the volume.
+fn audio_chip(
+    track: &Track,
+    left: f32,
+    right: f32,
+    row_width: f32,
+    colors: Palette,
+) -> Option<AnyElement> {
     if right <= left {
-        return;
+        return None;
     }
     let file_type = track
         .path
@@ -664,29 +804,33 @@ fn show_audio_chips(
     }
 
     let label = details.join("  •  ");
-    let tooltip = tooltip_details.join("\n");
-    let font = egui::FontId::proportional(10.0);
-    let text_color = colors.muted;
-    let galley = ui.painter().layout_no_wrap(label, font, text_color);
-    let chip_width = galley.size().x + 16.0;
-    let available_width = right - left;
-    if chip_width <= available_width {
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(right - chip_width, controls_rect.center().y - 11.0),
-            egui::vec2(chip_width, 22.0),
-        );
-        ui.painter().rect(
-            rect,
-            3.0,
-            colors.panel,
-            egui::Stroke::new(1.0_f32, colors.border),
-            egui::StrokeKind::Inside,
-        );
-        ui.painter()
-            .galley(rect.center() - galley.size() * 0.5, galley, text_color);
-        ui.interact(rect, ui.id().with("audio-info-chip"), egui::Sense::hover())
-            .on_hover_text(tooltip);
+    // Text is not measured before layout, so a generous average glyph width decides whether the
+    // chip fits; the chip itself is as wide as its text.
+    let chip_width = label.chars().count() as f32 * 5.6 + 16.0;
+    if chip_width > right - left {
+        return None;
     }
+    Some(
+        div()
+            .id("audio-info-chip")
+            .absolute()
+            .right(sz(row_width - right))
+            .top(sz(ROW_HEIGHT * 0.5 - 11.0))
+            .h(sz(22.0))
+            .px(sz(8.0))
+            .flex()
+            .items_center()
+            .bg(colors.panel)
+            .border_1()
+            .border_color(colors.border)
+            .rounded(sz(3.0))
+            .text_size(sz(10.0))
+            .text_color(colors.muted)
+            .whitespace_nowrap()
+            .tooltip(tooltip(tooltip_details.join("\n")))
+            .child(label)
+            .into_any_element(),
+    )
 }
 
 fn format_time(time: Duration) -> String {
