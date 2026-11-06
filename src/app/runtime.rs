@@ -95,7 +95,7 @@ impl ViperApp {
             Ok(handle) => app.update(cx, |app, _| app.window = Some(handle.into())),
             Err(error) => {
                 eprintln!("The window could not open: {error:#}");
-                cx.quit();
+                app.update(cx, |app, cx| app.quit(cx));
             }
         }
     }
@@ -107,6 +107,8 @@ impl ViperApp {
         } else {
             self.window = None;
             self.inputs.clear();
+            // Save the window size now, since a logout or the tray's forced exit skips `quit`.
+            self.save_settings();
         }
         true
     }

@@ -397,7 +397,7 @@ impl ViperApp {
         self.save_lastfm_settings();
     }
 
-    /// Track the window size in memory; it is persisted once when the application exits.
+    /// Track the window size in memory; it is saved when the window closes and when the app quits.
     pub(super) fn observe_window_size(&mut self, window: &Window) {
         let size = window.viewport_size();
         let [width, height] = [f32::from(size.width), f32::from(size.height)];
