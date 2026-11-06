@@ -466,7 +466,8 @@ impl Playback {
         let Some(queue_input) = self.queue_input.as_ref().map(Arc::clone) else {
             return;
         };
-        self.refill_repeating_queue();
+        // Repeat refills the queue only once the context has ended, so turning repeat off while
+        // its last track plays still stops there.
         let next_track = self.next_queued_track_with_source();
         if let Some(preparation) = self.gapless_preparation.take() {
             match preparation.receiver.try_recv() {
@@ -1044,7 +1045,28 @@ impl Drop for Playback {
 
 #[cfg(test)]
 mod tests {
-    use super::Playback;
+    use super::{Playback, RepeatMode};
+    use crate::features::library::Track;
+    use std::{
+        path::PathBuf,
+        sync::{atomic::AtomicBool, Arc},
+    };
+
+    fn track(number: usize) -> Track {
+        Track {
+            path: PathBuf::from(format!("missing/{number}.flac")),
+            title: format!("Track {number}"),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: "Album".to_owned(),
+            disc_number: None,
+            track_number: None,
+            duration_ms: Some(180_000),
+            release_year: None,
+            audio: Default::default(),
+            metadata_missing: false,
+        }
+    }
 
     #[test]
     fn shuffled_album_can_start_on_its_first_track() {
@@ -1066,5 +1088,20 @@ mod tests {
         playback.context_tracks = vec![3, 4, 5];
         assert_eq!(playback.queue_context_from_start(), Some(3));
         assert_eq!(playback.auto_queue, [4, 5]);
+    }
+
+    #[test]
+    fn repeat_off_during_the_last_gapless_track_stops_there() {
+        let tracks: Vec<_> = (0..3).map(track).collect();
+        let (queue_input, _queue_output) = rodio::queue::queue(true);
+        let mut playback = Playback::default();
+        playback.current = Some(2);
+        playback.context_tracks = vec![0, 1, 2];
+        playback.repeat_mode = RepeatMode::All;
+        playback.queue_input = Some(queue_input);
+        playback.current_started = Some(Arc::new(AtomicBool::new(true)));
+        playback.update_gapless(&tracks, true);
+        playback.set_repeat_mode(RepeatMode::Off);
+        assert!(!playback.has_next());
     }
 }
