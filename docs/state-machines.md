@@ -15,13 +15,13 @@ minimized runs on its own thread:
 | Thread | Owns | Talks to the UI by |
 | --- | --- | --- |
 | `playback-driver` | Nothing; holds a `Weak` to `Arc<Mutex<Playback>>` (`player.rs:153`) | The shared mutex |
-| `viper-mpris` | Its own `MprisLibrary` copy of the tracks | The shared mutex, a 20 ms poll |
+| `viper-mpris` | Its own `MprisLibrary` copy of the tracks | The shared mutex, a 20 ms poll, and `Repaint` after each command |
 | `lastfm-scrobbler` | `Scrobbler` | The shared mutex, an event channel |
 | `discord-presence` | Discord client state | The shared mutex |
 | `music-library-scan`, `music-library-watch-scan`, artwork, `viper-cd-*`, lyrics, updater | One job each | A channel, plus `Repaint` to wake the UI |
 | `instance::listen`, tray | Nothing | `TrayEvent` channel plus `Repaint` |
 
-The UI thread runs `ViperApp::logic` only when its poll loop wakes (`runtime.rs:149`). The loop
+The UI thread runs `ViperApp::logic` only when its poll loop wakes (`runtime.rs:160`). The loop
 waits on `RepaintReceiver::wait` (`shared/repaint.rs`), which wakes on `request_repaint`, or once
 the earliest `request_repaint_after` deadline passes. Only the earliest deadline is kept, so every
 `logic` run asks again for the wakes it still needs.
@@ -40,6 +40,7 @@ Encoded by `ViperApp.window: Option<AnyWindowHandle>`, `tray: Option<Tray>`, and
 | State | Encoding |
 | --- | --- |
 | Open | `window = Some`, one GPUI window |
+| Minimized | Open, but minimized by the compositor. The app doesn't track it; GPUI gets no frame callbacks and draws nothing |
 | Hidden | `window = None`, tray present, app and its threads still running |
 | Reopening | `window = None` between `reopen_window` or `show_window` and the deferred `open_window` |
 | Quitting | `quit_requested = true`, `cx.quit()` called |
@@ -48,34 +49,47 @@ Invariants:
 
 - **L1.** Exactly one GPUI window exists while Open, and `window` is its handle.
 - **L2.** The `ViperApp` entity lives until Quitting. The window's `Root` holds it only while the
-  window is open, so the poll loop holds it too (`runtime.rs:149`, `start_polling`).
+  window is open, so the poll loop holds it too (`runtime.rs:160`, `start_polling`).
 - **L3.** The poll loop runs from startup to Quitting, whether or not a window is open.
 
 | From | Event | To | Where |
 | --- | --- | --- | --- |
 | (start) | `bootstrap::run` | Open | `bootstrap.rs:67`, `open_window` |
-| Open | Window close, tray present | Hidden | `window_should_close` (`runtime.rs:95`) |
+| Open | Minimize | Minimized | Compositor only |
+| Minimized | Taskbar click | Open, redrawn on the compositor's configure | Compositor only; no new launch |
+| Open, Minimized | Window close, tray present | Hidden; window size saved | `window_should_close` (`runtime.rs:104`) |
 | Open | Window close, no tray, or `quit_requested` | Quitting | `window_should_close` |
-| Hidden | `TrayEvent::Show` (tray, or a second launch) | Reopening, then Open | `show_window` (`runtime.rs:106`) |
-| Open, not focused | `TrayEvent::Show` | Reopening, then Open (Wayland ignores focus requests) | `show_window`, `reopen_window` (`runtime.rs:119`) |
+| Hidden | `TrayEvent::Show` (tray, or a second launch) | Reopening, then Open | `show_window` (`runtime.rs:117`) |
+| Open or Minimized, not focused | `TrayEvent::Show` | Reopening, then Open (Wayland ignores focus requests) | `show_window`, `reopen_window` (`runtime.rs:130`) |
 | Open | Logo change settles | Reopening, then Open | `logic`, `reopen_window` |
-| Hidden | Display connection gone (logout) | Quitting | `logic` (`runtime.rs:325`) |
-| Any | Tray Quit, File → Quit, restart to update | Quitting | `logic`, `quit` |
+| Hidden | Display connection gone (logout) | Quitting | `logic` (`runtime.rs:352`) |
+| Any | Tray Quit, File → Quit | Quitting | `logic`, `quit` |
+| Any | Restart to update, no disc being read or ripped | Quitting, then the update starts | `request_restart`, `logic` |
+| Reopening | `open_window` fails | Quitting, settings saved | `open_window` |
 
-Repeated `Show` events in one drain are merged (`merge_shows`, `runtime.rs:37`), so a burst of
+Repeated `Show` events in one drain are merged (`merge_shows`, `runtime.rs:46`), so a burst of
 launches can't open more than one window.
 
 ### Instance
 
 `platform/instance.rs`. The first copy is Primary and listens on
 `$XDG_RUNTIME_DIR/viper-music.sock`. A later launch is Secondary: it connects, which makes the
-primary send `TrayEvent::Show` and a repaint, and exits. If the primary doesn't answer within
-3 s, the secondary takes over.
+primary send `TrayEvent::Show` and a repaint. It then waits up to 3 s for the single-instance lock
+and exits, or takes over if the primary quit in that time (`main.rs`).
+
+- The lock is an abstract socket, so it is per network namespace, while the listening socket is
+  per runtime directory. Two copies in different network namespaces that share a runtime
+  directory both become Primary, and the later one takes the socket over. Seen only in the test
+  sandbox; desktop launches share one namespace.
+- An installed update replaces the AppImage on disk, not the running process. Until Restart, every
+  launch hands off to the old version, with the old version's behaviour.
 
 ### Restart to update
 
-`restart_requested` → `logic` → `Updater::restart()` sets the path to exec → `quit` → `main.rs`
-execs it. Restart wins over a window reopen requested in the same tick.
+`request_restart` sets `restart_requested` → `logic` → `Updater::restart()` sets the path to
+exec → `quit` → `main.rs` execs it. Restart wins over a window reopen requested in the same tick.
+While a disc is being read or ripped, the request waits, with a toast, and the rip thread's wake
+at its end carries it out.
 
 ## 2. Settings persistence
 
@@ -89,7 +103,9 @@ by `save` (preferences) and `save_album_state` (per-album rows).
 
 - **S1.** Settings that were never read are never written over the stored ones
   (`settings.rs:590`, `settings.rs:672`).
-- Volume, window size, and anything else not saved when it changed are written only by `quit`.
+- The volume is saved when the slider is let go, on Ctrl+↑/↓, and when MPRIS changes it
+  (`adopt_volume`, `runtime.rs`). The window size is saved when the window closes to the tray
+  and by `quit`.
 
 ## 3. Library
 
@@ -155,19 +171,20 @@ so the first wake comes from `start_polling`.
 | Paused | All `Some`, `Player::is_paused` |
 
 - **P1.** The six transport fields are all `Some` or all `None`. `start_track_at` sets them
-  together and `stop_current` (`player.rs:992`) clears them together.
+  together and `stop_current` (`player.rs:994`) clears them together.
 - **P2.** Every queued, history, and context index is below `tracks.len()`.
 
 | From | Event | To | Where |
 | --- | --- | --- | --- |
 | Any | `play`, `play_album`, `play_in_context`, `play_random_track` | Playing (or Stopped with an error) | `prepare_selection` (`player.rs:798`), then `start_track` |
-| Playing | Track ends, nothing scheduled | Playing the next queued track, or Stopped | `advance_if_finished` (`player.rs:402`) |
+| Playing | Track ends, nothing scheduled | Playing the next queued track, or Stopped | `advance_if_finished` (`player.rs:400`) |
 | Playing | Track ends, gapless track scheduled | Playing it, with no gap | `advance_if_finished` |
 | Playing | Track ends, Repeat One | Playing the same track | `advance_if_finished` |
 | Playing ↔ Paused | `toggle_pause`, MPRIS, tray | | `toggle_pause` |
+| Paused | A gapless track was reached just before the pause | Paused on that track | `advance_if_finished` |
 | Any | `skip_next`, `previous` | Playing another track | |
 | Any | `stop`, scan start, current track removed by the watcher | Stopped, queues and history cleared | `stop`, `remap_tracks` |
-| Any | Track can't open, or no audio output | Stopped, manual and automatic queues cleared, error set | `fail_to_start` (`player.rs:914`) |
+| Any | Track can't open, or no audio output | Stopped, manual and automatic queues cleared, error set | `fail_to_start` (`player.rs:916`) |
 
 ### Gapless pipeline
 
@@ -182,7 +199,8 @@ gapless is on and repeat isn't One (`tick`, `player.rs:188`).
 | Preparing | Decoder fails | Idle; that queue entry is dropped and the error shown |
 | Preparing, Scheduled | Queue edit, shuffle, repeat change, remap, gapless off | Idle (`clear_scheduled_pending`, `player.rs:555`) |
 | Scheduled | Audio thread reaches it | Promoted-unobserved: audible, `current` not updated yet |
-| Promoted-unobserved | Next driver tick | The scheduled track becomes `current` |
+| Promoted-unobserved | Next driver tick, playing or paused | The scheduled track becomes `current` |
+| Promoted-unobserved | Its file is removed | Stopped, as for a removed current track (`remap_tracks`) |
 
 `clear_scheduled_pending` keeps a track the audio thread has already promoted, because clearing
 rodio's queue returns 0 then.
@@ -197,7 +215,7 @@ rodio's queue returns 0 then.
   has to start. Gapless never refills it ahead of time, so turning repeat off during the last
   track still stops there.
 - **P4.** Starting an album queues every one of its tracks; with shuffle on, any of them can play
-  first (`queue_context_from_start`, `player.rs:363`).
+  first (`queue_context_from_start`, `player.rs:361`).
 
 ## 5. Player bar
 
@@ -214,7 +232,7 @@ rodio's queue returns 0 then.
 ### MPRIS
 
 `features/playback/mpris.rs`. Status is derived from `Playback` on each 20 ms poll and diffed
-against `previous_snapshot` (`mpris.rs:140`). Commands lock the playback mutex and act on it
+against `previous_snapshot` (`mpris.rs:145`). Commands lock the playback mutex and act on it
 directly, using MPRIS's own copy of the tracks.
 
 ### Last.fm sign-in
@@ -223,7 +241,8 @@ directly, using MPRIS's own copy of the tracks.
 
 | From | Event | To |
 | --- | --- | --- |
-| Any | Connect | RequestingToken |
+| Idle, AwaitingApproval | Connect | RequestingToken |
+| RequestingToken, Exchanging | Connect | Unchanged (`start_auth`, `lastfm.rs:139`) |
 | RequestingToken | Token received | AwaitingApproval(token), browser opened |
 | AwaitingApproval | Finish | Exchanging |
 | Exchanging | Session received | Idle, connected |
@@ -233,10 +252,10 @@ Replies that arrive in a state that doesn't expect them are dropped.
 
 ### Last.fm scrobbler
 
-Per track, identified by its file, not its index (`update_playback`, `lastfm.rs:234`):
+Per track, identified by its file, not its index (`update_playback`, `lastfm.rs:239`):
 New → NowPlaying sent → Scrobbled (at half the track or 4 minutes, if longer than 30 s). It goes
 back to New when the file changes, or when the position jumps from the last 2 s to the first 2 s
-(`playback_restarted`, `lastfm.rs:301`).
+(`playback_restarted`, `lastfm.rs:306`).
 
 ### Discord presence
 
@@ -322,34 +341,71 @@ rate while the window was minimized. The pause users saw came from 1.1.
 | 5.1 | Reading with its result unpolled (breaks R2, W1) | `viper-cd-read` sent its result without waking the app, and `watch_drives` stops asking for wakes in Reading. With no music playing, "Reading the disc" stayed up whenever the TOC and MusicBrainz lookup took longer than 1.5 s. | Wake after sending | `features::ripper::state::tests::reading_a_disc_wakes_the_app_when_it_is_done` |
 | 5.2 | Phase dropped (breaks R1) | `start_rip`, `retry_failed`, `edit_again`, and `cancel` used `mem::replace(&mut phase, Waiting)` and returned when the phase didn't match. A click from a stale frame, such as Cancel just as a rip finished, threw away Done or Failed. Rip while Ripping dropped the rip without cancelling it. | Put back a phase that doesn't match | `features::ripper::state::tests::actions_for_another_phase_leave_it_alone` |
 
+**Issue 6: Gapless bookkeeping.**
+
+| # | Invalid state | Evidence and scenario | Fix | Test |
+| --- | --- | --- | --- | --- |
+| 6.1 | Paused on a track `current` doesn't name | `tick` called `advance_if_finished` only while playing. Pausing within the 100 ms between the audio reaching a gapless track and the next tick left `current`, the seek bar's length, MPRIS, Discord, and Last.fm on the finished track until playback resumed. | Follow a scheduled track while paused, without starting anything | `features::playback::player::tests::pausing_as_a_gapless_track_starts_shows_that_track` |
+| 6.2 | Audible track with a stale index (breaks P2) | When the watcher removed the file of a gapless track the audio thread had already reached, `remap_tracks` tried to clear it, which can't drop a playing source, so it kept its old index. The next tick made that index `current`: the wrong title, or one past the end of the library. | Stop, as for a removed current track | `features::playback::player::tests::deleting_the_gapless_track_already_playing_stops_it` |
+
+**Issue 7: Settings that weren't saved.**
+
+| # | Invalid state | Evidence and scenario | Fix | Test |
+| --- | --- | --- | --- | --- |
+| 7.1 | Playback and settings disagree on the volume | MPRIS `SetVolume` (media keys, the Plasma applet) changed `Playback.volume` only. The slider kept the old value, the next slider or Ctrl+↑/↓ change jumped from it, and the volume wasn't saved. The MPRIS thread didn't wake the app either, so even the playing state could stay stale while paused. | `adopt_volume` in `update_playback` saves it; MPRIS wakes the app after each command | `app::runtime::tests::volume_set_over_mpris_is_shown_and_saved`. Sandbox: MPRIS `Volume = 0.33` stored 33. |
+| 7.2 | Window size lost | The size was written only by `quit`. A logout, the tray's forced exit, or a crash after hiding to the tray lost it, and a window that failed to reopen quit through `cx.quit()` without saving. | Save when the window closes to the tray; a failed reopen goes through `quit` | Sandbox: resized to 1100 × 700, closed to the tray, `kill -9`: the stored size was 1100 × 672 (the content area). |
+
+**Issue 8: Last.fm sign-in.**
+
+| # | Invalid state | Evidence and scenario | Fix | Test |
+| --- | --- | --- | --- | --- |
+| 8.1 | Approved session dropped, or the wrong token exchanged | `start_auth` had no state guard. Pressing Connect during Exchanging moved to RequestingToken, so the approved session arrived stale and was dropped. Pressing it twice opened two pages, and Finish exchanged the first token, while the page on top was the second. | Connect does nothing while a request or exchange is in flight | `platform::presence::lastfm::tests::connecting_again_mid_sign_in_keeps_the_request_in_flight` |
+
+**Issue 9: Restarting to update during a rip.**
+
+| # | Invalid state | Evidence and scenario | Fix | Test |
+| --- | --- | --- | --- | --- |
+| 9.1 | Rip ended without a warning | Restart quit at once, so the rest of the disc wasn't ripped and nothing said so. Tracks are written as hidden `.part` files and renamed when complete, so no half file reached the library. | Restart waits until no disc is being read or ripped, with a toast | None: needs a disc. |
+
+### Checked, not a bug
+
+**A taskbar click didn't bring the window back (reported on 2026-11-06).** The journal showed
+the two clicks at 16:22:16 and 16:22:25 started launches that handed off to a copy started at
+12:06. That copy was v26.11.8: the updater installed v26.11.9 at 13:06, but the running process
+stays the old version until Restart, and v26.11.8 had bug 1.1. On v26.11.9 in the sandbox, each
+of these brought the window back and focused it:
+
+- Minimize, then activate it as the taskbar does.
+- Close to the tray, then launch again.
+- Minimize, then launch again.
+- Minimize, close from the taskbar, then launch again.
+
+A Wayland trace showed the restored window acknowledging the compositor's configure and drawing
+new frames.
+
 ### Open
 
-Not fixed yet, most impactful first. "Plausible" means the code path exists but the timing is
+Not fixed yet, most impactful first. O3, O4, O8, O14, and O20 are fixed as 6.1, 7.1, 8.1, 6.2, and 7.2. "Plausible" means the code path exists but the timing is
 narrow or depends on outside conditions.
 
 | # | Invalid state or transition | Evidence | Confidence |
 | --- | --- | --- | --- |
-| O1 | Quitting or restarting to update during a rip kills it without a warning, leaving an incomplete album and an undrained `cdparanoia`. | `quit` and the restart path never check `ripper.busy()` | Confirmed |
-| O2 | Gapless prepare failures drain the queue. Each tick drops one entry, and only the last error is shown, while the non-gapless path stops instead. | `update_gapless` (`player.rs:480`, `511`, `525`) vs `fail_to_start` | Confirmed |
-| O3 | Pausing between a gapless promotion and the next tick leaves `current`, the seek clamp, MPRIS, Discord, and Last.fm on the previous track until it resumes. | `tick` calls `advance_if_finished` only while playing | Confirmed; window up to 100 ms |
-| O4 | MPRIS volume changes playback only, so the slider shows the old value and the change isn't saved. | `mpris.rs:243` vs `settings.volume` | Confirmed |
+| O1 | Tray Quit during a rip ends it without a warning, leaving the album incomplete. Restart to update now waits (9.1). | `quit` never checks `ripper.busy()` | Confirmed |
+| O2 | Not an invalid state, but inconsistent: when a gapless preparation fails, that file is skipped and the next one is tried, while without gapless one unreadable file stops playback and clears the queue (`fail_to_start`). If every file fails (a drive unplugged), both end Stopped with an empty queue. | `update_gapless` vs `fail_to_start` | Confirmed; behaviour choice |
 | O5 | Queue panel drags and removals use positions from the last frame. When the driver consumes the queue front mid-drag, they act on the neighbouring track. | `queue_panel.rs`, `consume_scheduled` | Plausible |
-| O6 | A scrobble that fails is never retried. Seeking past half scrobbles a track that wasn't heard, and replaying the same track doesn't scrobble it again. | `lastfm.rs:282`, `playback_restarted` | Confirmed |
+| O6 | A scrobble that fails is never retried. Seeking past half scrobbles a track that wasn't heard, and replaying the same track doesn't scrobble it again. | `lastfm.rs:287`, `playback_restarted` | Confirmed |
 | O7 | Cancel can't interrupt a stalled read, so a scratched disc can sit in Cancelling for minutes. | Cancel is checked between blocks; the read blocks on the `cdparanoia` pipe | Confirmed |
-| O8 | Last.fm Connect is never disabled. Pressing it twice, or during Exchanging, makes Finish exchange the wrong token or drop the approved session. | `start_auth` (`lastfm.rs:139`) has no state guard | Confirmed |
 | O9 | A user check for updates that fails offline replaces Available, hiding a found update. A check during a background check does nothing silently. | `updates.rs` | Confirmed |
 | O10 | Clicking Rip while the cover is still loading rips without it. A late "Search again" result overwrites tags the user has typed. | `state.rs` `start`, `choose` | Confirmed |
-| O11 | MPRIS metadata is republished only when the track index changes, so late artwork or a tag edit isn't shown. | `mpris.rs:150` | Confirmed |
+| O11 | MPRIS metadata is republished only when the track index changes, so late artwork or a tag edit isn't shown. | `mpris.rs:158` | Confirmed |
 | O12 | Discord's elapsed time ignores seeks and restarts until the 60 s refresh. | `PresenceKey` has no position | Confirmed |
 | O13 | MPRIS commands use their own copy of the tracks. Between a remap or scan start and `sync_mpris`, Next can start the wrong file. | `mpris.rs`, `library_watcher.rs` | Plausible; milliseconds |
-| O14 | A remap leaves an already-promoted scheduled track with its old index. | `remap_tracks` (`player.rs:824`) | Plausible |
 | O15 | Moving or renaming a folder is a removal then an addition, so the playing track stops and the queue is lost. | Watcher events | Confirmed |
 | O16 | A watcher removal doesn't remap the tag editor's `TrackDraft.index`, and a tag edit doesn't call `sync_mpris` or `record_new_albums`. | `tag_editor/state.rs` | Confirmed |
 | O17 | A failed lyrics lookup is cached for the session, so a network blip hides lyrics until restart. | `lyrics/state.rs`, `request` | Confirmed |
 | O18 | `connect_smb_share` sets `music_path` before a save that can fail and return early, and doesn't close album details. | `application.rs`, `connect_smb_share` | Confirmed |
 | O19 | A Last.fm settings read that fails (keyring not ready at login) shows empty credentials, and saving from Preferences then deletes the stored keys. | `load_lastfm_settings`, `save_secret` | Confirmed; needs a user save |
-| O20 | Volume and window size are saved only on Quit, so a logout or the tray's forced exit loses them. A window that fails to reopen quits without saving. | `quit`, `open_window` | Confirmed |
-| O21 | The driver wakes every 16 ms while paused with a gapless preparation pending. `prepare_selection` pushes the current track to history even when it is selected again. `update_playback` holds the playback mutex across disk writes. | `tick`, `prepare_selection` (`player.rs:798`), `runtime.rs` `update_playback` | Confirmed; minor |
+| O21 | The driver wakes every 16 ms while paused with a gapless preparation pending. `prepare_selection` pushes the current track to history even when it is selected again. | `tick`, `prepare_selection` (`player.rs:798`) | Confirmed; minor |
 
 ## Checking
 
@@ -361,4 +417,9 @@ narrow or depends on outside conditions.
   1. Start playback through MPRIS on that bus.
   2. Close the window through KWin scripting (`closeWindow()`).
   3. Check that the MPRIS position still advances.
-  4. Launch again inside the same namespace, and check that the window comes back.
+  4. Launch again inside the same namespace (`nsenter --target <pid> --user --net
+     --preserve-credentials`), and check that the window comes back. A second
+     `unshare -n` makes a new namespace, where the launch becomes a second Primary (see
+     Instance).
+  5. For the minimized paths, set `minimized` or `workspace.activeWindow` from a KWin script, as
+     the taskbar does.
