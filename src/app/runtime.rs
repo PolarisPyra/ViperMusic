@@ -130,14 +130,18 @@ impl ViperApp {
 
     /// Run [`Self::logic`] whenever background work or a delayed redraw wakes the app.
     ///
+    /// The loop holds the app, which the window holds only while it is open, so hiding to the tray
+    /// keeps playback, the tray, and later launches working until the app quits.
+    ///
     /// # Arguments
     /// * `wakes` - Receiver of the app's [`crate::shared::repaint::Repaint`] handle.
     /// * `cx` - Application entity context.
     pub(super) fn start_polling(&mut self, wakes: RepaintReceiver, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
+        let this = cx.entity();
+        cx.spawn(async move |_, cx| loop {
             let executor = cx.background_executor().clone();
             wakes.wait(|delay| executor.timer(delay)).await;
-            let window = this.read_with(cx, |app, _| app.window).ok().flatten();
+            let window = this.read_with(cx, |app, _| app.window);
             let window_active = window
                 .and_then(|window| {
                     window
@@ -145,12 +149,7 @@ impl ViperApp {
                         .ok()
                 })
                 .unwrap_or(false);
-            if this
-                .update(cx, |app, cx| app.logic(window_active, cx))
-                .is_err()
-            {
-                break;
-            }
+            this.update(cx, |app, cx| app.logic(window_active, cx));
         })
         .detach();
     }

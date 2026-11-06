@@ -62,9 +62,9 @@ pub fn run() {
                 let mut app =
                     ViperApp::with_settings_result(settings, repaint, tray_receiver, display, cx);
                 app.tray = tray;
-                app.start_polling(wakes, cx);
                 app
             });
+            app.update(cx, |app, cx| app.start_polling(wakes, cx));
             ViperApp::open_window(&app, cx);
         });
 }
