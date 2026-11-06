@@ -17,6 +17,10 @@ impl ViperApp {
                         .apply_watcher_update(discovered, &removed_paths);
                     self.playback()
                         .remap_tracks(&update.track_remap, &self.library.model.tracks);
+                    // The playing track moving to another index is not a new play.
+                    self.last_observed_track = self
+                        .last_observed_track
+                        .and_then(|index| update.track_remap.get(index).copied().flatten());
                     #[cfg(target_os = "linux")]
                     self.sync_mpris();
                     if update.selected_album_cleared {

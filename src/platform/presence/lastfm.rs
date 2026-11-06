@@ -6,6 +6,7 @@ use secrecy::ExposeSecret;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex, MutexGuard, PoisonError,
@@ -53,9 +54,10 @@ struct Scrobbler {
     sender: Sender<Event>,
     enabled: bool,
     settings: LastFmSettings,
-    current_track: Option<usize>,
+    /// File of the track being reported, which stays put when a library change renumbers it.
+    current_track: Option<PathBuf>,
     last_position: Duration,
-    now_playing_track: Option<usize>,
+    now_playing_track: Option<PathBuf>,
     scrobbled: bool,
     track_started_at: u64,
 }
@@ -86,18 +88,13 @@ impl LastFmService {
                     let playback = worker_playback
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
-                    let current = playback
-                        .current_track()
-                        .map(|(index, track)| (index, track.clone()));
+                    let current = playback.current_track().map(|(_, track)| track.clone());
                     let position = playback.position();
                     drop(playback);
                     scrobbler
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .update_playback(
-                            current.as_ref().map(|(index, track)| (*index, track)),
-                            position,
-                        );
+                        .update_playback(current.as_ref(), position);
                     drop(scrobbler);
                     thread::sleep(TICK);
                 }
@@ -234,11 +231,10 @@ impl LastFmService {
 }
 
 impl Scrobbler {
-    fn update_playback(&mut self, current: Option<(usize, &Track)>, position: Duration) {
-        let track_index = current.map(|(index, _)| index);
-        let track = current.map(|(_, track)| track);
-        if track_index != self.current_track {
-            self.current_track = track_index;
+    fn update_playback(&mut self, track: Option<&Track>, position: Duration) {
+        let path = track.map(|track| &track.path);
+        if path != self.current_track.as_ref() {
+            self.current_track = path.cloned();
             self.now_playing_track = None;
             self.scrobbled = false;
             self.track_started_at = crate::shared::clock::unix_time_seconds();
@@ -252,15 +248,15 @@ impl Scrobbler {
             self.track_started_at = crate::shared::clock::unix_time_seconds();
         }
         self.last_position = position;
-        let Some((track_index, track)) = current else {
+        let Some(track) = track else {
             return;
         };
         if !self.enabled || self.settings.session_key.is_none() {
             return;
         }
 
-        if self.now_playing_track != Some(track_index) {
-            self.now_playing_track = Some(track_index);
+        if self.now_playing_track.as_ref() != Some(&track.path) {
+            self.now_playing_track = Some(track.path.clone());
             let sender = self.sender.clone();
             let track = track.clone();
             let credentials = self.settings.clone();
@@ -403,4 +399,51 @@ fn api_call(
         return Err(format!("Last.fm: {message}"));
     }
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scrobbler;
+    use crate::{features::library::Track, platform::persistence::settings::LastFmSettings};
+    use std::{path::PathBuf, sync::mpsc, time::Duration};
+
+    fn track(path: &str) -> Track {
+        Track {
+            path: PathBuf::from(path),
+            title: "Song".to_owned(),
+            artist: "Artist".to_owned(),
+            album_artist: String::new(),
+            album: "Album".to_owned(),
+            disc_number: None,
+            track_number: None,
+            duration_ms: Some(300_000),
+            release_year: None,
+            audio: Default::default(),
+            metadata_missing: false,
+        }
+    }
+
+    #[test]
+    fn a_renumbered_track_is_still_the_same_play() {
+        let (sender, _receiver) = mpsc::channel();
+        let mut scrobbler = Scrobbler {
+            sender,
+            enabled: false,
+            settings: LastFmSettings::default(),
+            current_track: None,
+            last_position: Duration::ZERO,
+            now_playing_track: None,
+            scrobbled: false,
+            track_started_at: 0,
+        };
+        scrobbler.update_playback(Some(&track("music/b.flac")), Duration::from_secs(200));
+        scrobbler.track_started_at = 1;
+        scrobbler.scrobbled = true;
+        // A file removed earlier in the library moves this track to another index.
+        scrobbler.update_playback(Some(&track("music/b.flac")), Duration::from_secs(201));
+        assert_eq!(scrobbler.track_started_at, 1);
+        assert!(scrobbler.scrobbled);
+        scrobbler.update_playback(Some(&track("music/c.flac")), Duration::ZERO);
+        assert!(!scrobbler.scrobbled);
+    }
 }
