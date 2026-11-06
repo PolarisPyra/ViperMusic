@@ -347,22 +347,25 @@ impl Playback {
     /// * `album` - Album whose track indexes define playback order.
     /// * `tracks` - Current library tracks.
     pub fn play_album(&mut self, album: &Album, tracks: &[Track]) {
-        let Some((&first, rest)) = album.tracks.split_first() else {
+        if album.tracks.is_empty() {
             return;
-        };
+        }
         self.prepare_selection();
         self.error = None;
         self.context_tracks = album.tracks.clone();
-        let first = if self.shuffle_enabled {
-            self.auto_queue.extend(album.tracks.iter().copied());
-            self.auto_queue.retain(|&index| index != first);
+        if let Some(first) = self.queue_context_from_start() {
+            self.start_track(tracks, first);
+        }
+    }
+
+    /// Queue the whole listening context, shuffled when shuffle is on, and take the track that
+    /// plays first, so a shuffled album can start on any of its tracks.
+    fn queue_context_from_start(&mut self) -> Option<usize> {
+        self.auto_queue.extend(self.context_tracks.iter().copied());
+        if self.shuffle_enabled {
             self.shuffle_queue();
-            self.auto_queue.pop_front().unwrap_or(first)
-        } else {
-            self.auto_queue.extend(rest.iter().copied());
-            first
-        };
-        self.start_track(tracks, first);
+        }
+        self.auto_queue.pop_front()
     }
 
     /// Play a track and queue the tracks that follow it in a listening context.
@@ -1036,5 +1039,32 @@ impl Default for Playback {
 impl Drop for Playback {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Playback;
+
+    #[test]
+    fn shuffled_album_can_start_on_its_first_track() {
+        let mut playback = Playback::default();
+        playback.shuffle_enabled = true;
+        playback.context_tracks = vec![3, 4, 5];
+        let first = playback.queue_context_from_start();
+        let mut played: Vec<_> = first
+            .into_iter()
+            .chain(playback.auto_queue.iter().copied())
+            .collect();
+        played.sort_unstable();
+        assert_eq!(played, [3, 4, 5]);
+    }
+
+    #[test]
+    fn album_in_order_starts_on_its_first_track() {
+        let mut playback = Playback::default();
+        playback.context_tracks = vec![3, 4, 5];
+        assert_eq!(playback.queue_context_from_start(), Some(3));
+        assert_eq!(playback.auto_queue, [4, 5]);
     }
 }
