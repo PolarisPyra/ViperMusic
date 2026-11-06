@@ -1,5 +1,5 @@
 use std::{
-    sync::{mpsc::Sender, Arc},
+    sync::{atomic::Ordering, mpsc::Sender, Arc},
     thread,
     time::Duration,
 };
@@ -11,7 +11,7 @@ use ksni::{
     Icon, MenuItem, ToolTip,
 };
 
-use super::TrayEvent;
+use super::{TrayEvent, QUIT_HELD};
 
 /// StatusNotifierItem state read by the desktop host, which calls back on menu selections.
 pub(crate) struct LinuxTray {
@@ -23,19 +23,42 @@ pub(crate) struct LinuxTray {
 impl LinuxTray {
     /// Forward a menu selection to the app and wake its event loop.
     fn send(&self, event: TrayEvent) {
+        let quit = matches!(event, TrayEvent::Quit);
+        if quit {
+            QUIT_HELD.store(false, Ordering::Relaxed);
+        }
         let _ = self.sender.send(event);
         (self.wake)();
         // On Wayland a minimized window can stay blocked presenting its last frame, so it never
         // sees the quit. Exit anyway if it is still running shortly after, skipping exit handlers
         // because the graphics driver's can wait forever on that blocked frame.
-        if matches!(event, TrayEvent::Quit) {
+        if quit {
             thread::spawn(|| {
-                thread::sleep(Duration::from_secs(2));
-                // SAFETY: `_exit` ends the process at once and touches no Rust state.
-                unsafe { libc::_exit(0) };
+                if exit_after_quit(Duration::from_secs(2), crate::features::ripper::ripping) {
+                    // SAFETY: `_exit` ends the process at once and touches no Rust state.
+                    unsafe { libc::_exit(0) };
+                }
             });
         }
     }
+}
+
+/// Wait out a tray Quit, then decide whether the tray should end the process itself.
+///
+/// A window blocked while minimized can't ask about a rip, so one still running finishes first.
+///
+/// # Arguments
+/// * `delay` - Time the app has to quit on its own.
+/// * `ripping` - Whether a disc is still being ripped.
+///
+/// # Returns
+/// Whether to end the process: `false` once the app has held the quit to ask first.
+fn exit_after_quit(delay: Duration, ripping: impl Fn() -> bool) -> bool {
+    thread::sleep(delay);
+    while ripping() && !QUIT_HELD.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(250));
+    }
+    !QUIT_HELD.load(Ordering::Relaxed)
 }
 
 /// Build a menu entry that sends `event` when selected.
@@ -143,4 +166,28 @@ pub(crate) fn create(
     .spawn()
     .map(Tray)
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{exit_after_quit, QUIT_HELD};
+    use std::{cell::Cell, sync::atomic::Ordering, time::Duration};
+
+    #[test]
+    fn a_quit_the_app_cannot_see_lets_a_rip_finish_and_one_it_holds_stays() {
+        QUIT_HELD.store(false, Ordering::Relaxed);
+        let checks = Cell::new(0);
+        let ripping = || {
+            checks.set(checks.get() + 1);
+            checks.get() < 3
+        };
+        assert!(exit_after_quit(Duration::ZERO, ripping));
+        assert_eq!(checks.get(), 3);
+
+        let ripping = || {
+            QUIT_HELD.store(true, Ordering::Relaxed);
+            true
+        };
+        assert!(!exit_after_quit(Duration::ZERO, ripping));
+    }
 }

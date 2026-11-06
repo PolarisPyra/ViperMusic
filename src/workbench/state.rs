@@ -37,6 +37,8 @@ pub(crate) struct WorkbenchState {
     pub(crate) tag_editor: Option<TagEditor>,
     /// Set when the user asks to exit, so closing the window does not just hide it to the tray.
     pub(crate) quit_requested: bool,
+    /// Whether the dialog asking about quitting during a rip is open.
+    pub(crate) confirm_quit: bool,
 }
 
 impl WorkbenchState {
@@ -49,12 +51,13 @@ impl WorkbenchState {
             show_shortcuts: false,
             tag_editor: None,
             quit_requested: false,
+            confirm_quit: false,
         }
     }
 
     /// Whether a dialog that takes the keyboard, such as preferences or the tag editor, is open.
     pub(crate) fn dialog_open(&self) -> bool {
-        self.show_preferences || self.tag_editor.is_some()
+        self.show_preferences || self.tag_editor.is_some() || self.confirm_quit
     }
 
     /// Switch to the albums page with an album's track panel open.

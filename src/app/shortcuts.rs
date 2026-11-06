@@ -33,7 +33,9 @@ impl ViperApp {
         let plain = !keystroke.modifiers.modified();
         let command = keystroke.modifiers.secondary(cx) && !keystroke.modifiers.alt;
         if plain && key == "escape" && self.workbench.dialog_open() {
-            if self.workbench.tag_editor.is_some() {
+            if self.workbench.confirm_quit {
+                self.answer_quit(false, false);
+            } else if self.workbench.tag_editor.is_some() {
                 crate::features::tag_editor::request_close(self);
             } else {
                 self.workbench.show_preferences = false;

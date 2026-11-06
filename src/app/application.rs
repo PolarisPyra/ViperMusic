@@ -60,6 +60,8 @@ pub struct ViperApp {
     pub(crate) updater: crate::platform::updates::Updater,
     /// Set by `request_restart`; handled once no disc is being read or ripped.
     pub(crate) restart_requested: bool,
+    /// Set when the user chose to quit once the disc is done; handled like `restart_requested`.
+    pub(crate) quit_when_done: bool,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,
     #[cfg(target_os = "linux")]
@@ -155,7 +157,10 @@ impl ViperApp {
         let discord_presence = DiscordPresenceService::new(&playback);
         let lastfm_service = LastFmService::new(&playback);
         #[cfg(target_os = "linux")]
-        let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback), repaint.clone());
+        let mpris = crate::features::playback::mpris::MprisBridge::new(
+            Arc::clone(&playback),
+            repaint.clone(),
+        );
         let mut app = Self {
             workbench: WorkbenchState::new(startup_page),
             library: LibraryFeature::new(random_sort_seed),
@@ -176,6 +181,7 @@ impl ViperApp {
             logo_changes: Arc::default(),
             updater: crate::platform::updates::Updater::start(repaint.clone()),
             restart_requested: false,
+            quit_when_done: false,
             #[cfg(target_os = "linux")]
             smb_auth: saved_samba
                 .as_ref()

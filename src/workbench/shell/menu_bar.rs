@@ -60,7 +60,9 @@ pub(in crate::workbench) fn render(cx: &mut Context<ViperApp>) -> AnyElement {
                 app.workbench.show_preferences = true;
             }))
             .separator()
-            .item(menu_item("Quit", weak, |app, _, cx| app.quit(cx)))
+            .item(menu_item("Quit", weak, |app, _, cx| {
+                app.request_quit(true, cx)
+            }))
         }))
         .child(menu(
             "library-menu",

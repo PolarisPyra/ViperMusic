@@ -67,6 +67,7 @@ pub(crate) fn render(
         .children(features::preferences::render(app, window, cx))
         .children(features::tag_editor::render(app, window, cx))
         .children(updates::render_card(app, cx))
+        .children(shell::quit_dialog::render(app, cx))
         .children(toasts::render(app, cx))
         .into_any_element()
 }

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// Menu selections sent from the system tray to the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayEvent {
@@ -5,6 +7,14 @@ pub(crate) enum TrayEvent {
     Play,
     Pause,
     Quit,
+}
+
+/// Set when the app answers a tray Quit by asking first, so the tray doesn't force the exit.
+static QUIT_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Keep the process running after a tray Quit the app has chosen to ask about.
+pub(crate) fn hold_quit() {
+    QUIT_HELD.store(true, Ordering::Relaxed);
 }
 
 #[cfg(target_os = "linux")]

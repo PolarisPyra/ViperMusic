@@ -102,6 +102,10 @@ impl ViperApp {
 
     /// Decide what closing the window does: hide to the tray, or quit without one.
     fn window_should_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.tray.is_none() && !self.workbench.quit_requested && self.ripper.busy() {
+            self.workbench.confirm_quit = true;
+            return false;
+        }
         if self.workbench.quit_requested || self.tray.is_none() {
             self.quit(cx);
         } else {
@@ -138,6 +142,34 @@ impl ViperApp {
                 let _ = old.update(cx, |_, window, _| window.remove_window());
             }
         });
+    }
+
+    /// Quit, or while a disc is being read or ripped, show the window and ask first.
+    ///
+    /// # Arguments
+    /// * `window_active` - Whether the window has focus, as for [`Self::show_window`].
+    /// * `cx` - Application entity context.
+    pub(crate) fn request_quit(&mut self, window_active: bool, cx: &mut Context<Self>) {
+        if !self.ripper.busy() {
+            return self.quit(cx);
+        }
+        crate::platform::tray::hold_quit();
+        self.workbench.confirm_quit = true;
+        self.show_window(window_active, cx);
+    }
+
+    /// Answer the dialog asked by [`Self::request_quit`]: keep ripping, or quit once the disc is
+    /// done, stopping the rip first if `stop` is set.
+    pub(crate) fn answer_quit(&mut self, quit: bool, stop: bool) {
+        self.workbench.confirm_quit = false;
+        self.quit_when_done = quit;
+        if stop {
+            self.ripper.cancel();
+        } else if quit {
+            self.toasts
+                .push("Viper Music will quit once the disc is done".to_owned());
+        }
+        self.repaint.request_repaint();
     }
 
     /// Save settings and quit.
@@ -313,6 +345,7 @@ impl ViperApp {
                 TrayEvent::Show => self.show_window(window_active, cx),
                 TrayEvent::Play => self.tray_play(),
                 TrayEvent::Pause => self.tray_pause(),
+                TrayEvent::Quit if self.ripper.busy() => self.request_quit(window_active, cx),
                 TrayEvent::Quit => return self.quit(cx),
             }
         }
@@ -339,6 +372,9 @@ impl ViperApp {
             if self.updater.restart() {
                 return self.quit(cx);
             }
+        }
+        if self.quit_when_done && !self.ripper.busy() {
+            return self.quit(cx);
         }
         // HACK: see `install_launcher_icon`. The window manager reads the icon only when a window opens.
         if self.reopen_window.swap(false, Ordering::Relaxed) && self.window.is_some() {

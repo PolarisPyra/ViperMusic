@@ -13,7 +13,7 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver},
         Arc,
     },
@@ -69,6 +69,30 @@ pub(crate) enum RipEvent {
     },
 }
 
+/// Rip workers whose threads haven't ended yet.
+static WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a rip worker is still running, even one the app hasn't polled since it finished.
+pub(crate) fn ripping() -> bool {
+    WORKERS.load(Ordering::Relaxed) > 0
+}
+
+/// Counts a rip worker in [`WORKERS`] for as long as it lives, even if it panics.
+struct Worker;
+
+impl Worker {
+    fn start() -> Self {
+        WORKERS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        WORKERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// How often progress is reported while a track is read.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -82,9 +106,11 @@ pub(crate) fn spawn(
     repaint: impl Fn() + Send + 'static,
 ) -> io::Result<Receiver<RipEvent>> {
     let (sender, receiver) = mpsc::channel();
+    let worker = Worker::start();
     thread::Builder::new()
         .name("viper-cd-rip".to_owned())
         .spawn(move || {
+            let _worker = worker;
             let send = |event| {
                 let _ = sender.send(event);
                 repaint();
@@ -321,5 +347,44 @@ impl flacenc::source::Source for PcmSource<'_> {
 
     fn len_hint(&self) -> Option<usize> {
         Some(((self.remaining + self.read) / 4) as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ripping, spawn, AlbumTags, Drive, RipEvent, RipPlan};
+    use std::{
+        path::PathBuf,
+        sync::{atomic::AtomicBool, Arc},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn a_rip_counts_as_running_until_its_worker_ends() {
+        let plan = RipPlan {
+            drive: Drive::Simulated,
+            folder: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            album: AlbumTags {
+                title: String::new(),
+                artist: String::new(),
+                year: None,
+                disc_number: 1,
+                disc_count: 1,
+                track_count: 0,
+                release_id: None,
+            },
+            tracks: Vec::new(),
+            cover: None,
+            eject_when_done: false,
+        };
+        let events = spawn(plan, Arc::new(AtomicBool::new(false)), || {}).unwrap();
+        assert!(ripping());
+        assert!(matches!(events.recv(), Ok(RipEvent::Finished { .. })));
+        let start = Instant::now();
+        while ripping() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
