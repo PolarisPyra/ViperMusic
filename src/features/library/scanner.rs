@@ -291,7 +291,11 @@ pub(crate) fn scan_library_with_auth(
             if !track.album.trim().is_empty() {
                 if let Some(art) = embedded_art {
                     smb_album_art
-                        .entry(album_key(&track.album, &track.album_artist, track.is_lossless()))
+                        .entry(album_key(
+                            &track.album,
+                            &track.album_artist,
+                            track.is_lossless(),
+                        ))
                         .or_insert(art);
                 }
             }
@@ -346,7 +350,11 @@ pub(crate) fn scan_library_with_auth(
             continue;
         }
         groups
-            .entry(album_key(&track.album, &track.album_artist, track.is_lossless()))
+            .entry(album_key(
+                &track.album,
+                &track.album_artist,
+                track.is_lossless(),
+            ))
             .or_default()
             .push(index);
     }
