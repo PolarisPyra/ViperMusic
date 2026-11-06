@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.8] - 2026-11-06
+
+### Fixed
+
+- The File, Library, Playback, View and Help menus sit right next to the logo at the top left again, instead of starting past the sidebar.
+
 ## [26.11.7] - 2026-11-05
 
 ### Changed
