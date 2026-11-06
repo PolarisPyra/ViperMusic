@@ -54,7 +54,7 @@ build_appimage() {
     chmod +x "$linuxdeploy"
   fi
 
-  cargo build --release
+  cargo build --profile dist
   rm -rf "$appdir"
   # linuxdeploy matches the desktop file's Icon= name against the icon file name.
   sed 's|^Icon=.*|Icon=logo|' packaging/viper.desktop > "$appimage_desktop"
@@ -63,7 +63,7 @@ build_appimage() {
     cd "$appimage_dir"
     LDAI_OUTPUT="$out" LDAI_VERSION="$version" APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy" \
       --appdir "$appdir" \
-      --executable "$repo_root/target/release/viper" \
+      --executable "$repo_root/target/dist/viper" \
       --desktop-file "$appimage_desktop" \
       --icon-file "$repo_root/assets/logo.png" \
       --output appimage
