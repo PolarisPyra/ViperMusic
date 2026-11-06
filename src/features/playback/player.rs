@@ -853,7 +853,9 @@ impl Playback {
             if let Some(index) = remap.get(scheduled.index).copied().flatten() {
                 scheduled.index = index;
             } else {
-                self.clear_scheduled_pending();
+                // Clearing above kept it, so the audio thread already plays it: stop, as for a
+                // removed current track.
+                self.stop();
             }
         }
     }
@@ -1103,6 +1105,15 @@ mod tests {
         assert_eq!(playback.current, Some(1));
         assert!(playback.is_paused());
         assert!(playback.auto_queue.is_empty());
+    }
+
+    #[test]
+    fn deleting_the_gapless_track_already_playing_stops_it() {
+        let (mut playback, _next_finished) = playing_into_gapless_track();
+        let tracks = Arc::new(vec![track(0)]);
+        playback.remap_tracks(&[Some(0), None], &tracks);
+        assert_eq!(playback.current, None);
+        assert!(playback.scheduled_track.is_none());
     }
 
     #[test]
