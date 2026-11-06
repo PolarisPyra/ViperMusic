@@ -136,6 +136,8 @@ impl LibraryBackgroundTasks {
                         "Music folder watcher error: {error}"
                     )));
                     self.file_watcher = None;
+                    // Watch the folder again on the next poll rather than never again.
+                    self.watcher_root = None;
                 }
             }
         }
