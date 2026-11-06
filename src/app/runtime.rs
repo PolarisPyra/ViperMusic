@@ -137,6 +137,8 @@ impl ViperApp {
     /// * `wakes` - Receiver of the app's [`crate::shared::repaint::Repaint`] handle.
     /// * `cx` - Application entity context.
     pub(super) fn start_polling(&mut self, wakes: RepaintReceiver, cx: &mut Context<Self>) {
+        // Nothing has woken the loop yet, so poll once to pick up the startup scan.
+        self.repaint.request_repaint();
         let this = cx.entity();
         cx.spawn(async move |_, cx| loop {
             let executor = cx.background_executor().clone();
