@@ -77,8 +77,9 @@ pub(crate) struct WorkbenchUi {
     pub(crate) focus_search: bool,
     /// Sidebar width while its edge is being dragged.
     pub(crate) sidebar_drag: Option<f32>,
-    /// Position the seek bar is being dragged to, as a fraction of the track.
-    pub(crate) seek_preview: Option<f32>,
+    /// Track the seek bar is being dragged on, and the position it is dragged to as a fraction of
+    /// that track.
+    pub(crate) seek_preview: Option<(usize, f32)>,
     /// Where the pointer rests over the seek bar, as a fraction of the track.
     pub(crate) seek_hover: Option<f32>,
     /// Smooths the playback position the seek bar draws.

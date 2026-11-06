@@ -334,19 +334,20 @@ fn finish_drags(app: &mut ViperApp, cx: &Context<ViperApp>) {
     if cx.has_active_drag() {
         return;
     }
-    if let Some(fraction) = app.ui.seek_preview.take() {
-        seek_to(app, fraction);
+    if let Some((track, fraction)) = app.ui.seek_preview.take() {
+        seek_to(app, track, fraction);
     }
     if std::mem::take(&mut app.ui.volume_dragging) {
         app.save_settings();
     }
 }
 
-/// Seek the current track to `fraction` of its length.
-fn seek_to(app: &mut ViperApp, fraction: f32) {
+/// Seek `track` to `fraction` of its length, unless another track has started since the drag began.
+fn seek_to(app: &mut ViperApp, track: usize, fraction: f32) {
     let mut playback = app.playback();
     let Some(duration) = playback
         .current
+        .filter(|&current| current == track)
         .and_then(|index| app.library.model.tracks.get(index))
         .and_then(|track| track.duration_ms)
         .map(Duration::from_millis)
@@ -633,12 +634,13 @@ fn seek_row(
 ) -> AnyElement {
     let max_seconds = duration.map_or(0.0, |duration| duration.as_secs_f64());
     let can_seek = max_seconds > 0.0;
+    let current = transport.current;
     // Dragging previews the target time; the decoder seeks once on release.
     let shown = app
         .ui
         .seek_preview
-        .filter(|_| can_seek)
-        .map_or(transport.position, |fraction| {
+        .filter(|&(track, _)| can_seek && transport.current == Some(track))
+        .map_or(transport.position, |(_, fraction)| {
             Duration::from_secs_f64(max_seconds * f64::from(fraction))
         });
     let fraction = if can_seek {
@@ -725,7 +727,13 @@ fn seek_row(
         .when(can_seek, |bar| {
             bar.cursor_pointer()
                 .on_click(cx.listener(move |app, event: &ClickEvent, _, cx| {
-                    seek_to(app, horizontal_fraction(bounds.get(), event.position()));
+                    if let Some(track) = current {
+                        seek_to(
+                            app,
+                            track,
+                            horizontal_fraction(bounds.get(), event.position()),
+                        );
+                    }
                     cx.notify();
                 }))
                 .on_mouse_move(
@@ -742,10 +750,22 @@ fn seek_row(
                     }
                 }))
                 .on_drag(SeekDrag, |_, _, _, cx| cx.new(|_| DragPreview(None)))
-                .on_drag_move(listen(cx, |app, event: &DragMoveEvent<SeekDrag>, _, _| {
-                    app.ui.seek_preview =
-                        Some(horizontal_fraction(event.bounds, event.event.position));
-                }))
+                .on_drag_move(listen(
+                    cx,
+                    move |app, event: &DragMoveEvent<SeekDrag>, _, _| {
+                        // The drag stays with the track it began on.
+                        let track = app
+                            .ui
+                            .seek_preview
+                            .map_or(current, |(track, _)| Some(track));
+                        app.ui.seek_preview = track.map(|track| {
+                            (
+                                track,
+                                horizontal_fraction(event.bounds, event.event.position),
+                            )
+                        });
+                    },
+                ))
         });
     div()
         .flex()
