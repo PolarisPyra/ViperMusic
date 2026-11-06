@@ -421,7 +421,7 @@ pub fn scan_added_tracks(paths: &[PathBuf], cancel: &AtomicBool) -> DiscoveredTr
     let tracks: Vec<_> = candidates
         .par_iter()
         .filter(|path| !cancel.load(Ordering::Relaxed) && path.is_file())
-        .map(|path| scan_track(path.clone()))
+        .map(|path| read_track(path.clone()))
         .collect();
     let mut album_art = HashMap::new();
     let mut seen_album_art = HashSet::new();
@@ -560,5 +560,27 @@ fn fill_missing_display_metadata(track: &mut Track) {
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_added_tracks;
+    use std::{fs, path::PathBuf, sync::atomic::AtomicBool};
+
+    #[test]
+    fn untagged_files_the_watcher_finds_are_named_like_a_full_scan() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch/watcher-added");
+        let album = root.join("Live Album");
+        fs::create_dir_all(&album).expect("test folder is created");
+        fs::write(album.join("01 Opening.flac"), b"not audio").expect("test file is written");
+        let discovered = scan_added_tracks(std::slice::from_ref(&root), &AtomicBool::new(false));
+        fs::remove_dir_all(&root).expect("test folder is removed");
+        let [track] = discovered.tracks.as_slice() else {
+            panic!("expected one track, found {}", discovered.tracks.len());
+        };
+        assert_eq!(track.title, "01 Opening");
+        assert_eq!(track.album, "Live Album");
     }
 }
