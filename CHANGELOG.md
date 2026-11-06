@@ -3,6 +3,20 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.10] - 2026-11-06
+
+### Fixed
+
+- Volume changes from media keys or the desktop's player controls now show on the volume slider and are kept after a restart.
+- The window keeps its size after logging out while Viper Music is in the system tray.
+- Restarting to install an update while a CD is being read or ripped now waits until the disc is done, instead of stopping the rip.
+- Pressing Connect to Last.fm again while signing in no longer makes the sign-in fail.
+- Pausing right as the next song starts with gapless playback on now shows that song instead of the one that just ended.
+- Deleting the file of a song that just started with gapless playback now stops it, like deleting any playing song, instead of showing another song's details.
+- Quitting while a CD is being ripped now asks whether to wait for the disc to finish or stop ripping, instead of cutting the rip short.
+- A song that can't be opened is now skipped the same way with gapless playback on or off, instead of stopping playback and clearing the queue when gapless is off. If several in a row can't be opened, playback stops and the rest of the queue is kept.
+- Check for updates in Preferences now always shows its progress and result, even when a check was already running, and a check that fails while offline no longer hides an update that was already found.
+
 ## [26.11.9] - 2026-11-06
 
 ### Fixed
