@@ -19,6 +19,9 @@ const PREPARING_TICK: Duration = Duration::from_millis(16);
 const PLAYING_TICK: Duration = Duration::from_millis(100);
 /// How often the driver wakes with nothing to play; starting playback never waits for it.
 const IDLE_TICK: Duration = Duration::from_millis(250);
+/// Songs that can't be opened skipped in a row before playback stops, keeping the rest of the
+/// queue, so a disconnected drive doesn't empty it or loop through a repeating album.
+const MAX_UNREADABLE_IN_A_ROW: usize = 5;
 
 struct GaplessPreparation {
     track_index: usize,
@@ -129,6 +132,9 @@ pub struct Playback {
     current_started: Option<Arc<AtomicBool>>,
     scheduled_track: Option<ScheduledTrack>,
     gapless_preparation: Option<GaplessPreparation>,
+    /// Track whose gapless preparation failed. It isn't prepared again, so the current track's
+    /// end starts it the usual way, which skips it if it still can't be opened.
+    gapless_failed: Option<usize>,
     /// Whether upcoming tracks are shuffled.
     pub(crate) shuffle_enabled: bool,
     /// Repeat mode for the current song or listening context.
@@ -476,10 +482,7 @@ impl Playback {
                     return;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    if next_track.map(|(index, _)| index) == Some(preparation.track_index) {
-                        self.discard_next_queued_track();
-                        self.error = Some("Could not prepare the next audio track".to_owned());
-                    }
+                    self.gapless_failed = Some(preparation.track_index);
                     return;
                 }
                 Ok(result) => {
@@ -507,9 +510,8 @@ impl Playback {
                                 });
                                 return;
                             }
-                            Err(error) => {
-                                self.discard_next_queued_track();
-                                self.error = Some(error);
+                            Err(_) => {
+                                self.gapless_failed = Some(preparation.track_index);
                                 return;
                             }
                         }
@@ -521,6 +523,9 @@ impl Playback {
         let Some((track_index, _)) = self.next_queued_track_with_source() else {
             return;
         };
+        if self.gapless_failed == Some(track_index) {
+            return;
+        }
         let Some(track) = tracks.get(track_index) else {
             self.discard_next_queued_track();
             return;
@@ -554,6 +559,7 @@ impl Playback {
 
     fn clear_scheduled_pending(&mut self) {
         self.gapless_preparation = None;
+        self.gapless_failed = None;
         if self
             .current_started
             .as_ref()
@@ -865,6 +871,23 @@ impl Playback {
     }
 
     fn start_track_at(&mut self, tracks: &[Track], track_index: usize, position: Duration) {
+        self.start_track_skipping(tracks, track_index, position, 0);
+    }
+
+    /// Start a track, or skip to the next queued one if it can't be opened.
+    ///
+    /// # Arguments
+    /// * `tracks` - Current library tracks.
+    /// * `track_index` - Track to start.
+    /// * `position` - Where to start it.
+    /// * `skipped` - Songs that couldn't be opened just before this one.
+    fn start_track_skipping(
+        &mut self,
+        tracks: &[Track],
+        track_index: usize,
+        position: Duration,
+        skipped: usize,
+    ) {
         let Some(track) = tracks.get(track_index) else {
             self.stop_current();
             return;
@@ -906,13 +929,23 @@ impl Playback {
                 self.current_position_ns = Some(position_ns);
                 self.current_started = Some(started);
                 self.scheduled_track = None;
+                self.gapless_failed = None;
                 self.current = Some(track_index);
             }
-            Err(error) => self.fail_to_start(error),
+            Err(error) => {
+                self.stop_current();
+                self.error = Some(error);
+                if skipped + 1 < MAX_UNREADABLE_IN_A_ROW {
+                    self.refill_repeating_queue();
+                    if let Some(next) = self.pop_next_queued_track() {
+                        self.start_track_skipping(tracks, next, Duration::ZERO, skipped + 1);
+                    }
+                }
+            }
         }
     }
 
-    /// Stop playback, with the queue, when a track can't start, rather than trying the next one.
+    /// Stop playback, with the queue, when no audio output can be opened.
     fn fail_to_start(&mut self, error: String) {
         self.stop_current();
         self.manual_queue.clear();
@@ -1027,6 +1060,7 @@ impl Default for Playback {
             current_started: None,
             scheduled_track: None,
             gapless_preparation: None,
+            gapless_failed: None,
             shuffle_enabled: false,
             context_tracks: Vec::new(),
             repeat_mode: RepeatMode::Off,
@@ -1047,11 +1081,13 @@ impl Drop for Playback {
 
 #[cfg(test)]
 mod tests {
-    use super::{Playback, QueueSource, RepeatMode, ScheduledTrack};
+    use super::{Playback, QueueSource, RepeatMode, ScheduledTrack, MAX_UNREADABLE_IN_A_ROW};
     use crate::features::library::Track;
     use std::{
         path::PathBuf,
         sync::{atomic::AtomicBool, mpsc, Arc},
+        thread,
+        time::{Duration, Instant},
     };
 
     fn track(number: usize) -> Track {
@@ -1114,6 +1150,51 @@ mod tests {
         playback.remap_tracks(&[Some(0), None], &tracks);
         assert_eq!(playback.current, None);
         assert!(playback.scheduled_track.is_none());
+    }
+
+    #[test]
+    fn unreadable_songs_are_skipped_until_several_in_a_row_fail() {
+        let tracks: Vec<_> = (0..8).map(track).collect();
+        let mut playback = Playback::default();
+        playback.auto_queue = (1..8).collect();
+        playback.start_track(&tracks, 0);
+        assert_eq!(playback.current, None);
+        assert!(playback.error.is_some());
+        assert_eq!(
+            playback.auto_queue,
+            (MAX_UNREADABLE_IN_A_ROW..8).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_unreadable_song_is_skipped_the_same_way_with_gapless_on() {
+        let tracks: Vec<_> = (0..3).map(track).collect();
+        let (finished, completion) = mpsc::channel();
+        let (queue_input, _queue_output) = rodio::queue::queue(true);
+        let mut playback = Playback::default();
+        playback.current = Some(0);
+        playback.current_completion = Some(completion);
+        playback.current_started = Some(Arc::new(AtomicBool::new(true)));
+        playback.queue_input = Some(queue_input);
+        playback.auto_queue = [1, 2].into();
+        let start = Instant::now();
+        while playback.gapless_failed.is_none() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            playback.update_gapless(&tracks, true);
+            thread::sleep(Duration::from_millis(5));
+        }
+        // The song stays queued and isn't prepared again.
+        playback.update_gapless(&tracks, true);
+        assert!(playback.gapless_preparation.is_none());
+        assert_eq!(playback.auto_queue, [1, 2]);
+        assert!(playback.error.is_none());
+
+        // Track 0 ends: both songs are skipped as without gapless.
+        finished.send(()).unwrap();
+        playback.advance_if_finished(&tracks);
+        assert_eq!(playback.current, None);
+        assert!(playback.error.is_some());
+        assert!(playback.auto_queue.is_empty());
     }
 
     #[test]
