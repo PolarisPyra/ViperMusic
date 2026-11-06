@@ -5,7 +5,7 @@ use crate::{
         icons::{icon, IconName},
         theme::{self, Palette},
     },
-    workbench::{shell::sidebar, Page},
+    workbench::Page,
 };
 use gpui::{div, prelude::*, px, AnyElement, Context, MouseButton, WeakEntity};
 use gpui_component::{
@@ -49,20 +49,12 @@ pub(in crate::workbench) fn render(cx: &mut Context<ViperApp>) -> AnyElement {
         .items_center()
         .gap(sz(4.0))
         .h(sz(HEIGHT))
-        .pr(sz(8.0))
+        .px(sz(8.0))
         .py(sz(2.0))
         .bg(colors.canvas)
         .border_b_1()
         .border_color(colors.border)
-        // As wide as the compact sidebar, so the menus start past its separator.
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .pl(sz(8.0))
-                .w(sz(sidebar::COMPACT_WIDTH))
-                .child(icon(IconName::Disc, 18.0, colors.muted)),
-        )
+        .child(icon(IconName::Disc, 18.0, colors.muted).mr(sz(8.0)))
         .child(menu("file-menu", "File", &weak, |menu, weak, _, _| {
             menu.item(menu_item("Preferences", weak, |app, _, _| {
                 app.workbench.show_preferences = true;

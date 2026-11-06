@@ -11,8 +11,7 @@ use crate::{
 use gpui::{div, prelude::*, px, relative, AnyElement, Context, CursorStyle, DragMoveEvent};
 use gpui_component::menu::ContextMenuExt;
 
-/// Width of the sidebar when it shows only icons.
-pub(in crate::workbench) const COMPACT_WIDTH: f32 = 56.0;
+const COMPACT_WIDTH: f32 = 56.0;
 const COMPACT_THRESHOLD: f32 = 140.0;
 const MIN_EXPANDED_WIDTH: f32 = 170.0;
 const MAX_WIDTH: f32 = 360.0;
