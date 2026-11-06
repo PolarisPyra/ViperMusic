@@ -230,10 +230,7 @@ pub(crate) fn render_card(
         true,
         colors,
         click(cx, move |app, _, cx| match action {
-            UpdateAction::Restart => {
-                app.restart_requested = true;
-                app.repaint.request_repaint();
-            }
+            UpdateAction::Restart => app.request_restart(),
             UpdateAction::Download => cx.open_url(RELEASES_URL),
         }),
     );

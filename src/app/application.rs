@@ -58,7 +58,7 @@ pub struct ViperApp {
     pub(super) logo_changes: Arc<AtomicU64>,
     /// Background update checks and installs.
     pub(crate) updater: crate::platform::updates::Updater,
-    /// Set by the update card or Preferences; handled once the frame is drawn.
+    /// Set by `request_restart`; handled once no disc is being read or ripped.
     pub(crate) restart_requested: bool,
     #[cfg(target_os = "linux")]
     pub(super) smb_auth: Option<crate::features::library::smb::SmbAuth>,

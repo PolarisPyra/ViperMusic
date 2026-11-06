@@ -290,11 +290,18 @@ impl ViperApp {
             AppAction::FinishLastFmAuth => self.lastfm_service.finish_auth(&self.lastfm_settings),
             AppAction::DisconnectLastFm => self.disconnect_lastfm(),
             AppAction::CheckForUpdates => self.updater.check_now(),
-            AppAction::RestartToUpdate => {
-                self.restart_requested = true;
-                self.repaint.request_repaint();
-            }
+            AppAction::RestartToUpdate => self.request_restart(),
         }
+    }
+
+    /// Restart into the installed update, once any disc being read or ripped is finished.
+    pub(crate) fn request_restart(&mut self) {
+        if self.ripper.busy() {
+            self.toasts
+                .push("Viper Music will restart to update once the disc is done".to_owned());
+        }
+        self.restart_requested = true;
+        self.repaint.request_repaint();
     }
 
     /// Poll background work, handle tray events, and redraw the window if one is open.
@@ -325,9 +332,13 @@ impl ViperApp {
                 .request_repaint_after(Duration::from_millis(100));
         }
         self.update_playback();
-        // Quitting to update wins over a reopen asked for at the same time.
-        if std::mem::take(&mut self.restart_requested) && self.updater.restart() {
-            return self.quit(cx);
+        // Quitting to update wins over a reopen asked for at the same time. It waits for a rip,
+        // whose thread wakes the app when it ends.
+        if self.restart_requested && !self.ripper.busy() {
+            self.restart_requested = false;
+            if self.updater.restart() {
+                return self.quit(cx);
+            }
         }
         // HACK: see `install_launcher_icon`. The window manager reads the icon only when a window opens.
         if self.reopen_window.swap(false, Ordering::Relaxed) && self.window.is_some() {
