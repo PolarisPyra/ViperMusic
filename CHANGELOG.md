@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.6] - 2026-11-06
+
+### Changed
+
+- Viper Music's window has been rebuilt so the album grid and song lists scroll smoothly, album covers load faster, and the seek bar glides along while a song plays. Columns in the song list, the album list and an album's track list line up again, and the audio info chip next to the volume is more compact.
+
 ## [26.11.5] - 2026-11-05
 
 ### Fixed
