@@ -3,6 +3,22 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.9] - 2026-11-06
+
+### Fixed
+
+- Closing the window from the taskbar now hides Viper Music to the tray with the music still playing, and launching it again brings the window back. Before, closing it this way stopped the music, and the window would not open again until Viper Music was quit from the tray.
+- Viper Music now finishes loading your music on desktops without a system tray, where it used to stay on the loading screen and could not play anything.
+- Launching Viper Music twice in quick succession, such as with a double click, now brings up one window instead of two, one of which stopped updating.
+- If Viper Music can't read its saved settings when it starts, it no longer saves the defaults over them, which used to erase your music folder, ratings, favorites, and play counts. It now says that changes won't be saved until it can read them again.
+- Untagged songs added to your music folder while Viper Music is open now show their file and folder names as the title and album, as they do after a full rescan, instead of appearing blank.
+- Viper Music keeps watching your music folder for added and removed songs after a problem watching it, instead of no longer noticing changes until it restarts.
+- Removing a song from your music folder no longer counts another play for the album that is playing, or scrobbles the playing song to Last.fm a second time.
+- Playing an album with shuffle on now includes its first song, which it used to skip, and can start on any of its songs.
+- With gapless playback on, turning repeat off during an album's last song now stops at the end instead of starting the album again. With repeat on, there is now a brief pause where the album starts over.
+- Letting go of the seek bar after the song changed during the drag no longer jumps the next song to that point.
+- The Rip page no longer stays on "Reading the disc" when no music is playing, and a click just as a rip finishes no longer loses its summary or leaves the rip running.
+
 ## [26.11.8] - 2026-11-06
 
 ### Fixed
