@@ -13,7 +13,8 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y -o Acquire::Retries=3 build-essential file libasound2-dev \
-          libdbus-1-dev libfontconfig1-dev libfreetype-dev libfuse2 libsmbclient-dev pkg-config
+          libdbus-1-dev libfontconfig1-dev libfreetype-dev libfuse2 libsmbclient-dev \
+          libxkbcommon-dev libxkbcommon-x11-dev pkg-config
 
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       with:
