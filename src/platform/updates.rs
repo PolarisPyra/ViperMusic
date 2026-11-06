@@ -30,6 +30,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 /// How often the timer looks at the clock.
 const TICK: Duration = Duration::from_secs(5 * 60);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a check the user asked for looks whether a background one has finished.
+const BUSY_POLL: Duration = Duration::from_millis(100);
 /// A download that has not finished by then has stalled; the next check starts it again.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long the update card takes to fade and slide in.
@@ -301,19 +303,38 @@ impl Shared {
     /// (`watched`) shows its progress and its errors; a background one changes the state only
     /// when it finds something, so going offline does not hide an update already found.
     fn check(&self, watched: bool) {
-        if self.busy.swap(true, Ordering::SeqCst) {
+        self.check_with(watched, Self::update);
+    }
+
+    /// [`Self::check`], with `update` doing the checking.
+    fn check_with(&self, watched: bool, update: impl FnOnce(&Self, bool) -> anyhow::Result<()>) {
+        if watched {
+            // Wait for a background check or download, then check for the user.
+            if matches!(
+                self.state(),
+                None | Some(UpdateState::Idle | UpdateState::UpToDate | UpdateState::Failed { .. })
+            ) {
+                self.set(UpdateState::Checking);
+            }
+            while self.busy.swap(true, Ordering::SeqCst) {
+                thread::sleep(BUSY_POLL);
+            }
+        } else if self.busy.swap(true, Ordering::SeqCst) {
             return;
         }
         *self
             .last_check
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(SystemTime::now());
+        let shown = self.state();
+        // A found update stays shown until a check finds a newer one, even if the user's fails.
+        let watched = watched && !matches!(shown, Some(UpdateState::Available { .. }));
         // An installed update waits for the restart; checking again would download it again.
-        if !matches!(self.state(), Some(UpdateState::Ready { .. })) {
+        if !matches!(shown, Some(UpdateState::Ready { .. })) {
             if watched {
                 self.set(UpdateState::Checking);
             }
-            if let Err(error) = self.update(watched) {
+            if let Err(error) = update(self, watched) {
                 eprintln!("Update failed: {error:#}");
                 let shown = self.state();
                 if watched || matches!(shown, Some(UpdateState::Downloading { .. })) {
@@ -456,4 +477,52 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .timeout_global(Some(timeout))
         .build()
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Shared, UpdateState};
+    use std::{
+        sync::{atomic::Ordering, Arc},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn a_failed_check_keeps_an_update_already_found() {
+        let shared = Shared::default();
+        let found = UpdateState::Available {
+            version: "99.1.0".to_owned(),
+        };
+        shared.set(found.clone());
+        shared.check_with(true, |_, _| Err(anyhow::anyhow!("Could not reach GitHub")));
+        assert_eq!(shared.state(), Some(found));
+    }
+
+    #[test]
+    fn a_check_asked_for_during_a_background_one_reports_its_result() {
+        let shared = Arc::new(Shared::default());
+        shared.set(UpdateState::UpToDate);
+        shared.busy.store(true, Ordering::SeqCst);
+        let user = Arc::clone(&shared);
+        let check = thread::spawn(move || {
+            user.check_with(true, |_, watched| {
+                assert!(watched);
+                Err(anyhow::anyhow!("Could not reach GitHub"))
+            });
+        });
+        let start = Instant::now();
+        while shared.state() != Some(UpdateState::Checking) {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(5));
+        }
+        shared.busy.store(false, Ordering::SeqCst);
+        check.join().unwrap();
+        assert_eq!(
+            shared.state(),
+            Some(UpdateState::Failed {
+                message: "Could not reach GitHub".to_owned()
+            })
+        );
+    }
 }
