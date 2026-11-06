@@ -406,6 +406,10 @@ pub struct Settings {
     pub lyrics_panel_open: bool,
     /// Interface zoom factor, where 1.0 is the default size.
     pub ui_zoom: f32,
+    /// Whether saving is turned off, because the stored settings could not be read and saving
+    /// these would overwrite them.
+    #[serde(skip)]
+    pub(crate) read_only: bool,
 }
 
 impl Default for Settings {
@@ -439,10 +443,22 @@ impl Default for Settings {
             album_format_badges: true,
             lyrics_panel_open: false,
             ui_zoom: 1.0,
+            read_only: false,
         }
     }
 }
 impl Settings {
+    /// Defaults that stand in for settings that could not be read, which they never overwrite.
+    ///
+    /// # Returns
+    /// Default settings that are never saved.
+    pub(crate) fn unreadable() -> Self {
+        Self {
+            read_only: true,
+            ..Self::default()
+        }
+    }
+
     /// Load settings from SQLite, migrating legacy settings when necessary.
     ///
     /// # Returns
@@ -566,10 +582,14 @@ impl Settings {
     }
 
     /// Save application preferences, excluding per-album state and credentials.
+    /// Does nothing for [`Self::unreadable`] settings.
     ///
     /// # Errors
     /// Returns an I/O error if encoding or the database write fails.
     pub fn save(&self) -> io::Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
         let (window_width, window_height) =
             self.window_size.map_or((None, None), |[width, height]| {
                 (Some(f64::from(width)), Some(f64::from(height)))
@@ -640,7 +660,8 @@ impl Settings {
 
     /// Persist favorite, rating, and playback history for the given album keys.
     ///
-    /// Albums without any stored state are removed from the database.
+    /// Albums without any stored state are removed from the database. Does nothing for
+    /// [`Self::unreadable`] settings.
     ///
     /// # Arguments
     /// * `keys` - Stable album keys whose in-memory state should be written.
@@ -648,6 +669,9 @@ impl Settings {
     /// # Errors
     /// Returns an I/O error if the database transaction fails.
     pub fn save_album_state<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
         let mut connection = database::open()?;
         let transaction = connection.transaction().map_err(database::database_error)?;
         {
@@ -787,4 +811,15 @@ fn load_legacy_settings() -> io::Result<Option<Settings>> {
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn only_settings_that_could_not_be_read_are_read_only() {
+        assert!(Settings::unreadable().read_only);
+        assert!(!Settings::default().read_only);
+    }
 }

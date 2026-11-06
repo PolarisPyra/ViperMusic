@@ -102,8 +102,10 @@ impl ViperApp {
         let (settings, settings_error) = match settings_result {
             Ok(settings) => (settings, None),
             Err(error) => (
-                Settings::default(),
-                Some(format!("Could not read settings: {error}")),
+                Settings::unreadable(),
+                Some(format!(
+                    "Could not read settings, so changes won't be saved until Viper Music can read them: {error}"
+                )),
             ),
         };
         let (lastfm_settings, lastfm_error) =
