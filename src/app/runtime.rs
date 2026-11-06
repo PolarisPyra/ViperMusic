@@ -32,6 +32,16 @@ fn window_size(settings: &Settings) -> [f32; 2] {
         .unwrap_or([1440.0, 900.0])
 }
 
+/// Tray and launch events with repeated Show requests dropped. One Show already brings the window
+/// forward, and each one after it would open another window before the first has opened.
+fn merge_shows(events: impl IntoIterator<Item = TrayEvent>) -> Vec<TrayEvent> {
+    let mut shown = false;
+    events
+        .into_iter()
+        .filter(|&event| event != TrayEvent::Show || !std::mem::replace(&mut shown, true))
+        .collect()
+}
+
 impl ViperApp {
     /// Open the main window on `app`, which must not have one open.
     ///
@@ -275,7 +285,7 @@ impl ViperApp {
     ///
     /// Runs whether or not the window is open, so playback keeps advancing while it is hidden.
     fn logic(&mut self, window_active: bool, cx: &mut Context<Self>) {
-        while let Ok(event) = self.tray_events.try_recv() {
+        for event in merge_shows(self.tray_events.try_iter()) {
             match event {
                 TrayEvent::Show => self.show_window(window_active, cx),
                 TrayEvent::Play => self.tray_play(),
@@ -335,5 +345,25 @@ impl Render for ViperApp {
 impl Drop for ViperApp {
     fn drop(&mut self) {
         self.library.background.cancel_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_shows;
+    use crate::platform::tray::TrayEvent;
+
+    #[test]
+    fn two_launches_at_once_open_one_window() {
+        let events = [
+            TrayEvent::Show,
+            TrayEvent::Pause,
+            TrayEvent::Show,
+            TrayEvent::Play,
+        ];
+        assert_eq!(
+            merge_shows(events),
+            [TrayEvent::Show, TrayEvent::Pause, TrayEvent::Play]
+        );
     }
 }

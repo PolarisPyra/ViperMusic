@@ -1,5 +1,5 @@
 /// Menu selections sent from the system tray to the app.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayEvent {
     Show,
     Play,
