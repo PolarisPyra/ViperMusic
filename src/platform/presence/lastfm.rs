@@ -143,6 +143,11 @@ impl LastFmService {
             self.status = "Enter an API key and shared secret first".to_owned();
             return;
         }
+        // A second request would open a second page whose token Finish never exchanges, and one
+        // during the exchange would drop the session the user just approved.
+        if matches!(self.sign_in, SignIn::RequestingToken | SignIn::Exchanging) {
+            return;
+        }
         self.sign_in = SignIn::RequestingToken;
         self.status = "Requesting authorization...".to_owned();
         let sender = self.sender.clone();
@@ -403,9 +408,29 @@ fn api_call(
 
 #[cfg(test)]
 mod tests {
-    use super::Scrobbler;
+    use super::{LastFmService, Scrobbler, SignIn};
     use crate::{features::library::Track, platform::persistence::settings::LastFmSettings};
-    use std::{path::PathBuf, sync::mpsc, time::Duration};
+    use std::{
+        path::PathBuf,
+        sync::{mpsc, Arc, Mutex},
+        time::Duration,
+    };
+
+    #[test]
+    fn connecting_again_mid_sign_in_keeps_the_request_in_flight() {
+        let settings = LastFmSettings {
+            api_key: "key".into(),
+            api_secret: "secret".into(),
+            ..LastFmSettings::default()
+        };
+        let mut service = LastFmService::new(&Arc::new(Mutex::new(Default::default())));
+        service.sign_in = SignIn::Exchanging;
+        service.start_auth(&settings);
+        assert!(matches!(service.sign_in, SignIn::Exchanging));
+        service.sign_in = SignIn::RequestingToken;
+        service.start_auth(&settings);
+        assert!(matches!(service.sign_in, SignIn::RequestingToken));
+    }
 
     fn track(path: &str) -> Track {
         Track {
