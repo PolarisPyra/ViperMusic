@@ -1,5 +1,6 @@
 use super::application::ViperApp;
 use crate::{
+    features::playback::Playback,
     platform::{persistence::settings::Settings, tray::TrayEvent},
     shared::{action::AppAction, repaint::RepaintReceiver},
 };
@@ -30,6 +31,14 @@ fn window_size(settings: &Settings) -> [f32; 2] {
             ]
         })
         .unwrap_or([1440.0, 900.0])
+}
+
+/// Take the volume MPRIS set on `playback` into `settings`, so the slider shows it and it is saved.
+///
+/// # Returns
+/// Whether the volume changed and needs saving.
+fn adopt_volume(settings: &mut Settings, playback: &Playback) -> bool {
+    std::mem::replace(&mut settings.volume, playback.volume) != playback.volume
 }
 
 /// Tray and launch events with repeated Show requests dropped. One Show already brings the window
@@ -178,7 +187,12 @@ impl ViperApp {
         if let Some(error) = playback.error.take() {
             self.toasts.push(error);
         }
+        let volume_changed = adopt_volume(&mut self.settings, &playback);
         self.observe_playback_track(&playback);
+        drop(playback);
+        if volume_changed {
+            self.save_settings();
+        }
         if self.lastfm_service.poll(&mut self.lastfm_settings) {
             if let Err(error) =
                 crate::platform::persistence::settings::save_lastfm_settings(&self.lastfm_settings)
@@ -350,8 +364,23 @@ impl Drop for ViperApp {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_shows;
-    use crate::platform::tray::TrayEvent;
+    use super::{adopt_volume, merge_shows};
+    use crate::{
+        features::playback::Playback,
+        platform::{persistence::settings::Settings, tray::TrayEvent},
+    };
+
+    #[test]
+    fn volume_set_over_mpris_is_shown_and_saved() {
+        let mut settings = Settings::default();
+        let mut playback = Playback::default();
+        playback.volume = settings.volume;
+        assert!(!adopt_volume(&mut settings, &playback));
+        playback.volume = settings.volume / 2;
+        assert!(adopt_volume(&mut settings, &playback));
+        assert_eq!(settings.volume, playback.volume);
+        assert!(!adopt_volume(&mut settings, &playback));
+    }
 
     #[test]
     fn two_launches_at_once_open_one_window() {

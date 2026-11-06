@@ -155,7 +155,7 @@ impl ViperApp {
         let discord_presence = DiscordPresenceService::new(&playback);
         let lastfm_service = LastFmService::new(&playback);
         #[cfg(target_os = "linux")]
-        let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback));
+        let mpris = crate::features::playback::mpris::MprisBridge::new(Arc::clone(&playback), repaint.clone());
         let mut app = Self {
             workbench: WorkbenchState::new(startup_page),
             library: LibraryFeature::new(random_sort_seed),

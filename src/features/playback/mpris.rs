@@ -1,6 +1,9 @@
 //! MPRIS media-control bridge between the desktop session bus and shared playback state.
 use super::{Playback, RepeatMode};
-use crate::features::library::{Album, AlbumIndex, Track};
+use crate::{
+    features::library::{Album, AlbumIndex, Track},
+    shared::repaint::Repaint,
+};
 use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
 use std::{
     fs,
@@ -107,7 +110,9 @@ pub(crate) struct MprisBridge {
 }
 
 impl MprisBridge {
-    pub(crate) fn new(playback: Arc<Mutex<Playback>>) -> Self {
+    /// Start the MPRIS service, which acts on `playback` and wakes the app through `repaint`
+    /// after each command so it shows and saves the change.
+    pub(crate) fn new(playback: Arc<Mutex<Playback>>, repaint: Repaint) -> Self {
         fn assert_send<T: Send>() {}
         assert_send::<Playback>();
 
@@ -143,6 +148,7 @@ impl MprisBridge {
                         while !worker_shutdown.load(Ordering::Relaxed) {
                             while let Ok(command) = command_receiver.try_recv() {
                                 apply_command(&worker_playback, &worker_library, command);
+                                repaint.request_repaint();
                             }
                             if let Some(snapshot) =
                                 current_snapshot(&worker_playback, &worker_library)
