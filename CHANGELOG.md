@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.11] - 2026-11-09
+
+### Changed
+
+- The version chip at the right end of the menu bar shows the version number without a leading "v".
+
 ## [26.11.10] - 2026-11-06
 
 ### Fixed
