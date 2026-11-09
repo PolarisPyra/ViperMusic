@@ -192,7 +192,7 @@ fn version_chip(colors: Palette) -> impl IntoElement {
         .rounded(sz(4.0))
         .text_size(sz(11.0))
         .text_color(colors.muted)
-        .child(concat!("v", env!("CARGO_PKG_VERSION")))
+        .child(env!("CARGO_PKG_VERSION"))
 }
 
 /// Draw the Keyboard Shortcuts dialog while it is open.
