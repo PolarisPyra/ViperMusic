@@ -16,6 +16,11 @@ const APPLICATION_ID: Option<&str> = option_env!("DISCORD_APPLICATION_ID");
 /// How often the presence thread checks playback for a new song or a pause.
 const TICK: Duration = Duration::from_secs(1);
 
+/// How long a paused song stays on the profile. Discord counts up for as long as an activity is
+/// shown and keeps the account looking active, so a song left paused would read as hours of
+/// listening.
+const PAUSED_LIMIT: Duration = Duration::from_secs(5 * 60);
+
 /// Whether this build can publish a Discord presence.
 pub(crate) const fn available() -> bool {
     APPLICATION_ID.is_some()
@@ -168,6 +173,7 @@ struct DiscordPresence {
     client: Option<DiscordIpcClient>,
     enabled: bool,
     published: Option<PresenceKey>,
+    paused_since: Option<Instant>,
     retry_after: Instant,
     refresh_after: Instant,
 }
@@ -178,6 +184,7 @@ impl Default for DiscordPresence {
             client: None,
             enabled: false,
             published: None,
+            paused_since: None,
             retry_after: Instant::now(),
             refresh_after: Instant::now(),
         }
@@ -199,6 +206,12 @@ impl DiscordPresence {
         paused: bool,
         position: Duration,
     ) {
+        let now = Instant::now();
+        if !paused {
+            self.paused_since = None;
+        }
+        let paused_for = paused.then(|| now.duration_since(*self.paused_since.get_or_insert(now)));
+
         if self.enabled != options.is_some() {
             self.disconnect();
             self.enabled = options.is_some();
@@ -208,7 +221,7 @@ impl DiscordPresence {
         let (Some(options), Some(application_id)) = (options, APPLICATION_ID) else {
             return;
         };
-        let current = current.filter(|_| options.show_when_paused || !paused);
+        let current = current.filter(|_| paused_for.is_none_or(|time| shows_paused(options, time)));
         let Some((track_index, track)) = current else {
             if self.published.take().is_some() {
                 if let Some(client) = &mut self.client {
@@ -220,7 +233,6 @@ impl DiscordPresence {
             return;
         };
 
-        let now = Instant::now();
         if now < self.refresh_after
             && self
                 .published
@@ -329,5 +341,32 @@ impl DiscordPresence {
 impl Drop for DiscordPresence {
     fn drop(&mut self) {
         self.disconnect();
+    }
+}
+
+/// Whether a song that has been paused for `paused_for` is still on the profile.
+fn shows_paused(options: PresenceOptions, paused_for: Duration) -> bool {
+    options.show_when_paused && paused_for < PAUSED_LIMIT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_song_left_paused_comes_off_the_profile() {
+        let options = PresenceOptions::default();
+        assert!(shows_paused(options, Duration::ZERO));
+        assert!(shows_paused(options, PAUSED_LIMIT - TICK));
+        assert!(!shows_paused(options, PAUSED_LIMIT));
+    }
+
+    #[test]
+    fn a_paused_song_is_hidden_at_once_when_the_option_is_off() {
+        let options = PresenceOptions {
+            show_when_paused: false,
+            ..PresenceOptions::default()
+        };
+        assert!(!shows_paused(options, Duration::ZERO));
     }
 }
