@@ -276,7 +276,8 @@ back to New when the file changes, or when the position jumps from the last 2 s 
 ### Discord presence
 
 Publishes when `(track index, title, artist, album, paused, options)` changes, and refreshes every
-60 s. If Discord isn't running, it retries after a delay.
+60 s. If Discord isn't running, it retries after a delay. A song paused for 5 minutes
+(`PAUSED_LIMIT`) is cleared until playback resumes.
 
 ## 7. CD ripper
 
