@@ -3,6 +3,12 @@
 All notable changes to Viper Music are documented here, for the people who use it.
 Each release adds its notes at the top; see docs/release.md.
 
+## [26.11.12] - 2026-11-13
+
+### Fixed
+
+- Discord no longer shows a song as playing for hours after you pause it. A paused song now comes off your profile after 5 minutes and returns when you resume.
+
 ## [26.11.11] - 2026-11-09
 
 ### Changed
